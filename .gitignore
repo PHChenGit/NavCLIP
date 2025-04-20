@@ -1,0 +1,91 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Virtual environment
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyTorch-related
+*.pt
+*.pth
+*.ckpt
+
+# Dataset and model files
+data/
+datasets/
+checkpoints/
+runs/        # used by TensorBoard
+logs/
+*.log
+output/
+
+# Python tools
+pip-log.txt
+pip-delete-this-directory.txt
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# macOS
+.DS_Store
+
+# Linux
+*.swp
+*~
+
+# Test and coverage files
+.coverage
+.tox/
+.nox/
+.cache/
+.pytest_cache/
+htmlcov/
+
+# MyPy
+.mypy_cache/
+
+# Jupyter Notebook hidden state
+.jupyter/
+
+# Pyre type checker
+.pyre/
+
+# Bandit security checker
+.bandit/
+
+# Local result files
+output/
+results/
+
+# Optional: ignore large media/data files
+*.tar
+*.tar.gz
+*.zip
+*.rar
+*.7z
+*.csv
+*.tsv
+*.h5
+*.npy
+*.npz
+*.pkl
+
+# Others
+*.bak
+*.tmp
