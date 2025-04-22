@@ -23,7 +23,7 @@ class LocationEncoderCapsule(nn.Module):
         return x
 
 class LocationEncoder(nn.Module):
-    def __init__(self, sigma=[2**0, 2**4, 2**8], from_pretrained=True, pretrained_path: str=""):
+    def __init__(self, sigma=[2**0, 2**4, 2**8]):
         super(LocationEncoder, self).__init__()
         self.sigma = sigma
         self.n = len(self.sigma)
@@ -31,18 +31,8 @@ class LocationEncoder(nn.Module):
         for i, s in enumerate(self.sigma):
             self.add_module('LocEnc' + str(i), LocationEncoderCapsule(sigma=s))
 
-        if from_pretrained:
-            if pretrained_path == "":
-                weight_folder = os.path.dirname(os.path.realpath(__file__))
-                weight_folder = os.path.join(weight_folder, "weights")
-                self.pretrained_path = f"{weight_folder}/location_encoder_weights.pth"
-            else:
-                self.pretrained_path = pretrained_path
-
-            self._load_weights()
-
-    def _load_weights(self):
-        self.load_state_dict(torch.load(self.pretrained_path, weights_only=True))
+    # def load_weights(self, pretrained_path: str):
+    #     self.load_state_dict(torch.load(pretrained_path, weights_only=True))
 
     def forward(self, location):
         device = next(self.parameters()).device

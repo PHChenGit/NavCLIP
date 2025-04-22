@@ -12,17 +12,15 @@ from transformers import CLIPModel, AutoProcessor
 
 from geoclip.model.image_encoder import ImageEncoder
 from geoclip.model.location_encoder import LocationEncoder
-from .misc import load_gallery_data
+from .misc import load_gallery_data, log_pred_result
 
 class GeoCLIPLightning(pl.LightningModule):
     def __init__(self,
                  gallery_path: str,
                  clip_model_name: str = "openai/clip-vit-large-patch14",
-                 from_pretrained: bool = True,
                  queue_size: int = 4096,
-                 weights: dict = None,
-                 learning_rate: float = 1e-4, # 添加學習率超參數
-                 weight_decay: float = 0.01,  # 添加權重衰減超參數
+                 learning_rate: float = 1e-4,
+                 weight_decay: float = 0.01,
                  ):
         super().__init__()
         self.save_hyperparameters()
@@ -31,56 +29,39 @@ class GeoCLIPLightning(pl.LightningModule):
         self.CLIP = CLIPModel.from_pretrained(clip_model_name)
         # self.image_processor = AutoProcessor.from_pretrained(clip_model_name)
         self.image_encoder = ImageEncoder()
-
-        weight_folder = Path(__file__).resolve().parent / "weights"
-
-        # default_image_encoder_weight_path = weight_folder / "image_encoder_mlp_weights.pth"
-        # default_location_encoder_weight_path = weight_folder / "location_encoder_weights.pth"
-        # default_logit_scale_weight_path = weight_folder / "logit_scale_weights.pth"
-
-        if weights is not None:
-            self.image_encoder_weight_path = weight_folder / weights.get('image_encoder')
-            self.location_encoder_weight_path = weight_folder / weights.get('location_encoder')
-            self.logit_scale_weight_path = weight_folder / weights.get('logit_scale')
-            self.location_encoder = LocationEncoder(from_pretrained=True, pretrained_path=self.location_encoder_weight_path)
-        else:
-            self.location_encoder = LocationEncoder(from_pretrained=False)
+        self.location_encoder = LocationEncoder()
 
         self.gps_gallery: torch.Tensor = load_gallery_data(gallery_path)
         self._initialize_gps_queue(queue_size)
-        self.should_load_weights = from_pretrained
 
         for param in self.CLIP.parameters():
             param.requires_grad = False
 
         self.criterion = nn.CrossEntropyLoss()
+        """
+        For saving prediction result and ground-truth in prediction step
+        """
+        self.pred_coordinate_list = []
+        self.true_coordinate_list = []
 
-    def setup(self, stage=None):
-        """Called by Lightning after model is moved to device"""
-        if self.should_load_weights:
-            print(f">\t正在載入預訓練權重...")
-            if hasattr(self, 'image_encoder_weight_path'):
-                print(f">\t圖像編碼器權重: {self.image_encoder_weight_path}")
-            if hasattr(self, 'location_encoder_weight_path'):    
-                print(f">\t位置編碼器權重: {self.location_encoder_weight_path}")
-            if hasattr(self, 'logit_scale_weight_path'):
-                print(f">\tLogit Scale 權重: {self.logit_scale_weight_path}")
-            self._load_weights()
-
-    def _load_weights(self):
+    def load_weights(self, pretrained_dir):
         """Loads weights to the correct device"""
         device = self.device
+        print(f">\tload_weights pretrained_dir: {pretrained_dir}")
         
-        if hasattr(self, 'image_encoder_weight_path') and Path(self.image_encoder_weight_path).exists():
-            weights = torch.load(self.image_encoder_weight_path, map_location=device, weights_only=True)
+        image_encoder_path = Path(pretrained_dir) / "image_encoder.pth"
+        if image_encoder_path.exists():
+            weights = torch.load(image_encoder_path, map_location=device, weights_only=True)
             self.image_encoder.load_state_dict(weights)
-            
-        if hasattr(self, 'location_encoder_weight_path') and Path(self.location_encoder_weight_path).exists():
-            weights = torch.load(self.location_encoder_weight_path, map_location=device, weights_only=True)
+
+        location_encoder_path = Path(pretrained_dir) / "location_encoder.pth"
+        if location_encoder_path.exists():
+            weights = torch.load(location_encoder_path, map_location=device, weights_only=True)
             self.location_encoder.load_state_dict(weights)
             
-        if hasattr(self, 'logit_scale_weight_path') and Path(self.logit_scale_weight_path).exists():
-            weights = torch.load(self.logit_scale_weight_path, map_location=device, weights_only=True)
+        logit_scale_path = Path(pretrained_dir) / "logit_scale.pth" 
+        if logit_scale_path.exists():
+            weights = torch.load(logit_scale_path, map_location=device, weights_only=True)
             self.logit_scale.data = weights.to(device)
 
     def _initialize_gps_queue(self, queue_size):
@@ -178,19 +159,15 @@ class GeoCLIPLightning(pl.LightningModule):
             logits_per_image = self(query_imgs, self.gps_gallery)
 
         probs = logits_per_image.softmax(dim=-1)
+        out = torch.argmax(probs, dim=-1)
+        pred_coordinates = self.gps_gallery[out]
 
-        top_pred = torch.topk(probs, 1, dim=1)
-        top_pred_coordinates = self.gps_gallery[top_pred.indices[0]]
-        val_dist_mae, val_dist_rmse = self._common_val_test_loss(top_pred_coordinates, coordinates)
+        val_dist_mae, val_dist_rmse = self._common_val_test_loss(pred_coordinates, coordinates)
 
-        self.log('Valdiation Dist MAE(pixel)', val_dist_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val_dist_rmse', val_dist_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_dist_MAE', val_dist_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_dist_RMSE', val_dist_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        # 可以額外計算和記錄其他指標，例如 Top-k accuracy
-        # topk_acc = calculate_topk_accuracy(logits_per_image, labels, k=1) # 假設有此函數
-        # self.log('val_acc_top1', topk_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        return val_dist_rmse
+        return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         ref_imgs, query_imgs, coordinates, yaws = batch
@@ -204,26 +181,31 @@ class GeoCLIPLightning(pl.LightningModule):
         probs_per_image = logits_per_image.softmax(dim=-1).cpu() # [B, num_gallery_gps]
 
         top_k = 1
-        top_pred_prob, top_pred_indices = torch.topk(probs_per_image, top_k, dim=1)
-        top_pred_gps_list = []
-        for i in range(top_pred_indices.shape[0]):
-            indices_for_image_i = top_pred_indices[i] # [k]
-            gps_for_image_i = self.gps_gallery[indices_for_image_i] # [k, 2]
-            top_pred_gps_list.append(gps_for_image_i)
+        top_pred = torch.topk(probs_per_image, top_k, dim=1)
+        pred_coordinate = self.gps_gallery[top_pred.indices[0]]
+        # self.pred_coordinate_list.append(pred_coordinate)
+        # self.true_coordinate_list.append(coordinates.cpu().numpy())
+        # pred_dist_mae, pred_dist_rmse = self._common_val_test_loss(pred_coordinate, coordinates)
 
-        # 如果需要，可以將列表堆疊成張量
-        top_pred_gps = torch.stack(top_pred_gps_list) # [B, k, 2]
+        # return {"pred_dist_mae_pixel": pred_dist_mae, "pred_dist_rmse_pixel": pred_dist_rmse}
+        return {
+            "pred_coordinate": pred_coordinate.detach().cpu().numpy(),
+            "true_coordinate": coordinates.cpu().numpy()
+        }
 
-        # 返回預測結果，可以是一個字典
-        return {"top_k_gps": top_pred_gps, "top_k_probs": top_pred_prob}
-
+    # def on_predict_end(self) -> None:
+    #     pred_dist_mae, pred_dist_rmse = self._common_val_test_loss(torch.Tensor(np.array(self.pred_coordinate_list)), torch.Tensor(np.array(self.true_coordinate_list)))
+    #     data = {
+    #         "Pred Dist MAE(pixel)": pred_dist_mae,
+    #         "Pred Dist RMSE(pixel)": pred_dist_rmse,
+    #     }
+    #     log_pred_result(data, "/home/rvl1421/Documents/hsun/NavCLIP/output/", "pred_NTUT_playground.json")
+    #
+    #     print(f"pred dist mae: {pred_dist_mae}")
+    #     print(f"pred dist RMSE: {pred_dist_rmse}")
+    #     return super().on_predict_end()
 
     def configure_optimizers(self):
-        # params_to_optimize = [
-        #     {'params': self.image_encoder.parameters(), "lr": 3e-4},
-        #     {'params': self.location_encoder.parameters(), "lr": 3e-4},
-        #     {'params': [self.logit_scale]}
-        # ]
         params_to_optimize = [
             {'params': self.image_encoder.parameters(), "lr": 3e-4},
             {'params': self.location_encoder.parameters(), "lr": 3e-4},

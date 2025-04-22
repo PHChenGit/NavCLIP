@@ -1,7 +1,6 @@
 import os
 from os.path import exists
 import random
-import time
 
 import cv2
 import numpy as np
@@ -18,7 +17,7 @@ import pytorch_lightning as pl
 
 def img_train_transform(size=224):
     return transforms.Compose([
-        transforms.Resize(size), # Ensure consistent input size
+        transforms.Resize(size),
         transforms.RandomApply([transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8),
         transforms.RandomGrayscale(p=0.2),
         transforms.PILToTensor(),
@@ -29,7 +28,7 @@ def img_train_transform(size=224):
 
 def img_val_transform(size=224):
     return transforms.Compose([
-        transforms.Resize(size), # Ensure consistent input size
+        transforms.Resize(size),
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -611,34 +610,31 @@ class GeoCLIPDataModule(pl.LightningDataModule):
     def setup(self, stage: str = None):
         """Create the datasets based on the stage."""
 
-        # Select the Dataset class based on dataset_type HParam
         if self.hparams.dataset_type == 'Pose':
-            TrainValDatasetClass = PoseDataLoader
-            TestDatasetClass = PoseDataLoader
+            TrainValPredDatasetClass = PoseDataLoader
         elif self.hparams.dataset_type == 'PoseV2':
             # PoseDataLoaderV2 needs size explicitly if transform doesn't handle it
             # Our transforms now handle it, but we pass it for clarity if needed internally
-            TrainValDatasetClass = lambda csv, folder, transform: PoseDataLoaderV2(csv, folder, transform, size=self.hparams.image_size)
+            TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoaderV2(csv, folder, transform, size=self.hparams.image_size)
         elif self.hparams.dataset_type == 'WarpingOmniGlue':
-            TrainValDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_OmniGlue(csv, folder, transform, size=self.hparams.image_size)
+            TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_OmniGlue(csv, folder, transform, size=self.hparams.image_size)
         elif self.hparams.dataset_type == 'WarpingLightGlue':
-            TrainValDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_LightGlue(csv, folder, transform, size=self.hparams.image_size)
+            TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_LightGlue(csv, folder, transform, size=self.hparams.image_size)
         elif self.hparams.dataset_type == 'WarpingSIFT':
-            TrainValDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_SIFT(csv, folder, transform, size=self.hparams.image_size)
+            TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_SIFT(csv, folder, transform, size=self.hparams.image_size)
         else:
-            # This case is already checked in __init__
             raise ValueError(f"Unknown dataset_type: {self.hparams.dataset_type}")
 
 
-        if stage == 'fit' or stage is None:
+        if stage == 'fit':
             print(f"Setting up 'fit' stage with dataset type: {self.hparams.dataset_type}")
-            self.train_dataset = TrainValDatasetClass(
+            self.train_dataset = TrainValPredDatasetClass(
                 dataset_file=self.hparams.train_csv,
                 dataset_folder=self.hparams.dataset_folder,
                 transform=self.train_transform
             )
             # Use the same dataset class type for validation, but with validation transform
-            self.val_dataset = TrainValDatasetClass(
+            self.val_dataset = TrainValPredDatasetClass(
                 dataset_file=self.hparams.val_csv,
                 dataset_folder=self.hparams.dataset_folder,
                 transform=self.val_transform
@@ -646,6 +642,14 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             print(f"Train dataset size: {len(self.train_dataset)}")
             print(f"Validation dataset size: {len(self.val_dataset)}")
 
+        if stage == 'validate':
+            self.val_dataset = TrainValPredDatasetClass(
+                dataset_file=self.hparams.val_csv,
+                dataset_folder=self.hparams.dataset_folder,
+                transform=self.val_transform
+            )
+            print(f"Validation dataset size: {len(self.val_dataset)}")
+            
         # if stage == 'test' or stage is None:
         #     print(f"Setting up 'test' stage.")
         #     self.test_dataset = TestDatasetClass(
@@ -657,17 +661,13 @@ class GeoCLIPDataModule(pl.LightningDataModule):
         if stage == 'predict' or stage is None:
             # Use predict_csv if provided, otherwise fall back to test_csv
             predict_csv_path = self.hparams.predict_csv if self.hparams.predict_csv else self.hparams.test_csv
-            if predict_csv_path:
-                print(f">\tSetting up 'predict' stage using CSV: {predict_csv_path}")
-                self.predict_dataset = TestDatasetClass(
-                    dataset_file=predict_csv_path,
-                    dataset_folder=self.hparams.dataset_folder,
-                    transform=self.test_transform # Use test transform for prediction
-                )
-                print(f">\tPredict dataset size: {len(self.predict_dataset)}")
-            else:
-                print(">\tNo predict_csv provided, skipping 'predict' dataset setup.")
-                self.predict_dataset = None
+            print(f">\tSetting up 'predict' stage using CSV: {predict_csv_path}")
+            self.predict_dataset = TrainValPredDatasetClass(
+                dataset_file=predict_csv_path,
+                dataset_folder=self.hparams.dataset_folder,
+                transform=self.test_transform # Use test transform for prediction
+            )
+            print(f">\tPredict dataset size: {len(self.predict_dataset)}")
 
 
     def train_dataloader(self):
@@ -678,7 +678,6 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size,
             shuffle=True,
             num_workers=self.hparams.num_workers,
-            pin_memory=True, # Improves data transfer speed to GPU
             persistent_workers=True if self.hparams.num_workers > 0 else False, # Avoid worker restart overhead
             drop_last=True # Often beneficial for training stability
         )
@@ -691,22 +690,8 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=self.hparams.num_workers,
-            pin_memory=True,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
-            drop_last=False
-        )
-
-    def test_dataloader(self):
-        if not self.test_dataset:
-            raise RuntimeError("Test dataset not initialized. Run setup('test') first.")
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.hparams.batch_size,
-            shuffle=False,
-            num_workers=self.hparams.num_workers,
-            pin_memory=True,
-            persistent_workers=True if self.hparams.num_workers > 0 else False,
-            drop_last=False
+            drop_last=True
         )
 
     def predict_dataloader(self):
@@ -719,8 +704,7 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=self.hparams.num_workers,
-            pin_memory=True,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
-            drop_last=False
+            drop_last=True
         )
 
