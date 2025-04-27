@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,14 +10,23 @@ from torch.optim.lr_scheduler import StepLR, MultiStepLR
 
 import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
+from PIL import Image as IM
 
 from geoclip.model.image_encoder import ImageEncoder
 from geoclip.model.location_encoder import LocationEncoder
-from .misc import load_gallery_data, log_pred_result
+from .misc import (
+    load_gallery_data,
+    log_pred_result,
+    denormalize_and_restore_image,
+    estimate_rotation_angle,
+    calculate_dist,
+    zoom_at
+)
 
 class GeoCLIPLightning(pl.LightningModule):
     def __init__(self,
                  gallery_path: str,
+                 sat_img: str = "",
                  clip_model_name: str = "openai/clip-vit-large-patch14",
                  queue_size: int = 4096,
                  learning_rate: float = 1e-4,
@@ -44,6 +54,16 @@ class GeoCLIPLightning(pl.LightningModule):
         """
         self.pred_coordinate_list = []
         self.true_coordinate_list = []
+        self.pred_yaw_list = []
+        self.true_yaw_list = []
+        """
+        Only work at prediction stage.
+        For estimate uav orientation and refine coordinates
+        """
+        self.mapglue = torch.jit.load('/home/rvl1421/Documents/hsun/hc-geoclip/MapGlue/weights/fastmapglue_model.pt') 
+        self.mapglue.eval()
+        if sat_img:
+            self.sat_img = IM.open(sat_img).convert('RGB')
 
     def load_weights(self, pretrained_dir):
         """Loads weights to the correct device"""
@@ -184,27 +204,73 @@ class GeoCLIPLightning(pl.LightningModule):
         top_k = 1
         top_pred = torch.topk(probs_per_image, top_k, dim=1)
         pred_coordinate = self.gps_gallery[top_pred.indices[0]]
+
+        # img_h, img_w = query_imgs.shape[2], query_imgs.shape[3]
+        # center_x, center_y = pred_coordinate[0].cpu().numpy()
+        center_x, center_y = coordinates[0].cpu().numpy()
+        img_h, img_w = 224, 224
+
+        half_crop = img_h // 2
+        crop_top = int(center_y - half_crop)
+        crop_bottom = int(center_y + half_crop)
+        crop_left = int(center_x - half_crop)
+        crop_right = int(center_x + half_crop)
+
+        # left, upper, right, lower
+        crop_box = (
+            crop_left,
+            crop_top,
+            crop_right,
+            crop_bottom
+        )
+
+        copy_sat_img = self.sat_img.copy()
+        img_pred = copy_sat_img.crop(crop_box)
+        img_pred_h, img_pred_w = img_pred.size
+
+        # scale = 2
+        # cx, cy = img_pred_h // 2, img_pred_w // 2
+        # resized_img_pred = zoom_at(img_pred, cx, cy, scale)
+        # resized_img_pred_h, resized_img_pred_w = resized_img_pred.size
+        # resized_cx, resized_cy = resized_img_pred_h // 2, resized_img_pred_w // 2
+        restored_query_imgs = denormalize_and_restore_image(query_imgs)[0]
+        H_pred, yaw_pred = estimate_rotation_angle(self.mapglue, np.array(img_pred), np.array(restored_query_imgs))
+        # H_pred, yaw_pred = estimate_rotation_angle(self.mapglue, np.array(resized_img_pred), np.array(restored_query_imgs))
+
+        # self.pred_yaw_list.append(yaw_pred)
+        # self.true_yaw_list.append(yaws)
+        top_left_x = center_x - half_crop
+        top_left_y = center_y - half_crop
+        # new_top_left_x = center_x - (resized_img_pred_h * scale/2)
+        # new_top_left_y = center_y - (resized_img_pred_w * scale/2)
+        refine_pred_coordinate = np.array([112, 112, 1]) @ H_pred + np.array([top_left_x, top_left_y, 1])
+        refine_pred_coordinate = torch.Tensor(refine_pred_coordinate[:2]).unsqueeze(0)
+
+        """
+        If refine worse than coarse, back to use coarse
+        """
+        coarse_dist_error = calculate_dist(coordinates.cpu().numpy(), pred_coordinate.cpu().numpy())
+        if coarse_dist_error != 0:
+
+            refine_dist_error = calculate_dist(coordinates.cpu().numpy(), refine_pred_coordinate.cpu().numpy())
+            if refine_dist_error > coarse_dist_error:
+                refine_pred_coordinate = pred_coordinate
+            refine_dist_error = calculate_dist(coordinates.cpu().numpy(), refine_pred_coordinate.cpu().numpy())
+        else:
+            refine_pred_coordinate = pred_coordinate
+
         # self.pred_coordinate_list.append(pred_coordinate)
         # self.true_coordinate_list.append(coordinates.cpu().numpy())
         # pred_dist_mae, pred_dist_rmse = self._common_val_test_loss(pred_coordinate, coordinates)
 
         # return {"pred_dist_mae_pixel": pred_dist_mae, "pred_dist_rmse_pixel": pred_dist_rmse}
         return {
-            "pred_coordinate": pred_coordinate.detach().cpu().numpy(),
-            "true_coordinate": coordinates.cpu().numpy()
+            "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
+            "pred_fine_coordinate": refine_pred_coordinate.detach().cpu().numpy(),
+            "true_coordinate": coordinates.cpu().numpy(),
+            "pred_yaw_angle": yaw_pred,
+            "true_yaw": yaws.cpu().numpy()
         }
-
-    # def on_predict_end(self) -> None:
-    #     pred_dist_mae, pred_dist_rmse = self._common_val_test_loss(torch.Tensor(np.array(self.pred_coordinate_list)), torch.Tensor(np.array(self.true_coordinate_list)))
-    #     data = {
-    #         "Pred Dist MAE(pixel)": pred_dist_mae,
-    #         "Pred Dist RMSE(pixel)": pred_dist_rmse,
-    #     }
-    #     log_pred_result(data, "/home/rvl1421/Documents/hsun/NavCLIP/output/", "pred_NTUT_playground.json")
-    #
-    #     print(f"pred dist mae: {pred_dist_mae}")
-    #     print(f"pred dist RMSE: {pred_dist_rmse}")
-    #     return super().on_predict_end()
 
     def configure_optimizers(self):
         params_to_optimize = [
@@ -217,7 +283,9 @@ class GeoCLIPLightning(pl.LightningModule):
                           weight_decay=self.hparams.weight_decay,
                           betas=(0.9, 0.999),
                           eps=1e-08)
+
         # scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+        # scheduler = MultiStepLR(optimizer, [30, 60, 80], gamma=self.hparams.scheduler_gamma)
         scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
 
         return {
