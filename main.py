@@ -18,10 +18,11 @@ if __name__ == '__main__':
     parser.add_argument("--epochs", type=int, default=500, help="training epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
     parser.add_argument("--queue_size", type=int, default=4096)
-    parser.add_argument("--output_dir", type=str, default='output', help="checkpoint folder")
+    parser.add_argument("--ckpt_folder", type=str, default='output', help="checkpoint folder")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--ds_folder", type=str, default=r"~/Documents/hsun/datasets/NTU_playground_Cross_Season_100k", help="dataset folder path")
     parser.add_argument("--dataset_file", type=str, default=r"taipei.csv", help="dataset csv file")
+    parser.add_argument("--scheduler_gamma", type=float, default=0.5)
     args = parser.parse_args()
 
     ACCELERATOR = 'gpu' if torch.cuda.is_available() else 'cpu'
@@ -42,13 +43,14 @@ if __name__ == '__main__':
         dataset_folder=str(DATASET_ROOT),
         batch_size=args.bs,
         num_workers=args.num_workers,
+        image_size=336,
     )
 
     datamodule.setup()
 
     checkpoint_callback = MyModelCheckpoint(
-        dirpath=f"{args.output_dir}/checkpoints",
-        filename='best-model-{epoch:02d}-{val_loss:.4f}',
+        dirpath=f"{args.ckpt_folder}",
+        filename='best-model-{epoch:02d}-{val_dist_MAE:.4f}',
         save_top_k=1,
         verbose=True,
         monitor='val_dist_MAE', # 監控驗證損失
@@ -60,7 +62,7 @@ if __name__ == '__main__':
         verbose=True,
         mode='min'
     )
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), learning_rate=args.lr)
+    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), learning_rate=args.lr, scheduler_gamma=args.scheduler_gamma)
 
     tensorboard_logger = pl.loggers.TensorBoardLogger(save_dir="logs", name=args.name)
 

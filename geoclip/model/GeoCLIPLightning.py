@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR, MultiStepLR
 
 import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
@@ -21,6 +21,7 @@ class GeoCLIPLightning(pl.LightningModule):
                  queue_size: int = 4096,
                  learning_rate: float = 1e-4,
                  weight_decay: float = 0.01,
+                 scheduler_gamma: float = 0.5,
                  ):
         super().__init__()
         self.save_hyperparameters()
@@ -216,6 +217,14 @@ class GeoCLIPLightning(pl.LightningModule):
                           weight_decay=self.hparams.weight_decay,
                           betas=(0.9, 0.999),
                           eps=1e-08)
-        scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+        # scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+        scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
 
-        return [optimizer], [scheduler]
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'monitor': 'val_dist_MAE'
+            }
+        }
