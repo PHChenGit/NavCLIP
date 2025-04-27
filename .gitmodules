@@ -1,0 +1,3 @@
+[submodule "MapGlue"]
+	path = MapGlue
+	url = git@github.com:PeihaoWu/MapGlue.git
