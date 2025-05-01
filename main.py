@@ -8,7 +8,8 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from dataloader import GeoCLIPDataModule
-from geoclip.model.GeoCLIPLightning import GeoCLIPLightning
+from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
+from models.geoclip.misc import create_gallery
 from mymodelckpt import MyModelCheckpoint
 
 if __name__ == '__main__':
@@ -35,6 +36,7 @@ if __name__ == '__main__':
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
     COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
+    VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
 
     datamodule = GeoCLIPDataModule(
         str(TRAIN_CSV),
@@ -46,7 +48,14 @@ if __name__ == '__main__':
         image_size=336,
     )
 
-    datamodule.setup()
+    datamodule.setup('fit')
+    train_dataloader = datamodule.train_dataloader()
+    val_dataloader = datamodule.val_dataloader()
+    if not COORDINATE_GALLERY.exists():
+        create_gallery(COORDINATE_GALLERY.parent, train_dataloader)
+
+    if not VAL_COORDINATE_GALLERY.exists():
+        create_gallery(VAL_COORDINATE_GALLERY.parent, val_dataloader)
 
     checkpoint_callback = MyModelCheckpoint(
         dirpath=f"{args.ckpt_folder}",
