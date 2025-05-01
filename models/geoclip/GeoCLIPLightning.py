@@ -12,8 +12,8 @@ import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
 from PIL import Image as IM
 
-from geoclip.model.image_encoder import ImageEncoder
-from geoclip.model.location_encoder import LocationEncoder
+from models.geoclip.image_encoder import ImageEncoder
+from models.geoclip.location_encoder import LocationEncoder
 from .misc import (
     load_gallery_data,
     log_pred_result,

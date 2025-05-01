@@ -9,8 +9,8 @@ import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
 
 from dataloader import GeoCLIPDataModule
-from geoclip.model.GeoCLIPLightning import GeoCLIPLightning
-from geoclip.model.misc import log_pred_result
+from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
+from models.geoclip.misc import log_pred_result
 
 
 def main(args):
@@ -60,6 +60,7 @@ def main(args):
         "Pred Dist RMSE(pixel)": pred_dist_rmse_pixel,
     }
     print(data)
+    exit()
     log_pred_result(data, "/home/rvl1421/Documents/hsun/NavCLIP/output/", "pred_NTUT_playground.json")
 
 if __name__ == '__main__':
