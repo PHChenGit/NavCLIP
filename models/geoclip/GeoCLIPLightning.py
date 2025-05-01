@@ -60,7 +60,7 @@ class GeoCLIPLightning(pl.LightningModule):
         Only work at prediction stage.
         For estimate uav orientation and refine coordinates
         """
-        self.mapglue = torch.jit.load('/home/rvl1421/Documents/hsun/hc-geoclip/MapGlue/weights/fastmapglue_model.pt') 
+        self.mapglue = torch.jit.load(Path('~/Documents/hsun/NavCLIP/models/MapGlue/weights/fastmapglue_model.pt').expanduser()) 
         self.mapglue.eval()
         if sat_img:
             self.sat_img = IM.open(sat_img).convert('RGB')

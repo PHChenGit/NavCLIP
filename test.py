@@ -35,7 +35,7 @@ def main(args):
     )
     datamodule.setup()
 
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY))
+    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), sat_img=args.sat_img, clip_model_name="openai/clip-vit-large-patch14-336")
 
     if Path(args.pretrained_model_dir).exists():
         model.load_weights(args.pretrained_model_dir)
