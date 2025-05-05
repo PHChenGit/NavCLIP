@@ -17,7 +17,7 @@ import pytorch_lightning as pl
 
 def img_train_transform(size=224):
     return transforms.Compose([
-        transforms.Resize(size),
+        # transforms.Resize(size),
         transforms.RandomApply([transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8),
         transforms.RandomGrayscale(p=0.2),
         transforms.PILToTensor(),
@@ -28,7 +28,7 @@ def img_train_transform(size=224):
 
 def img_val_transform(size=224):
     return transforms.Compose([
-        transforms.Resize(size),
+        # transforms.Resize(size),
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -38,7 +38,7 @@ def img_val_transform(size=224):
 def img_test_transform(size=224):
      # Usually test/predict also need normalization if the model expects it
     return transforms.Compose([
-        transforms.Resize(size), # Ensure consistent input size
+        # transforms.Resize(size), # Ensure consistent input size
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -47,13 +47,16 @@ def img_test_transform(size=224):
 
 
 class RandomDiscreteRotation:
-    """Applies a random rotation from a discrete list of angles."""
+    """
+    Applies a random rotation from a discrete list of angles.
+    Rotate image in counter-wise.
+    """
     def __init__(self, angles):
         self.angles = angles
 
     def __call__(self, img):
         angle = random.choice(self.angles)
-        return angle, F.rotate(img, angle=-angle)
+        return angle, F.rotate(img, angle=angle)
 
 class BaseDataLoader(Dataset):
     """
@@ -90,6 +93,7 @@ class BaseDataLoader(Dataset):
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
             ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            # ref_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
             if exists(ref_img_path):
                 ref_imgs.append(ref_img_path)
                 latitude = float(row['LAT'])
@@ -122,18 +126,25 @@ class PoseDataLoader(BaseDataLoader):
         ref_img = IM.open(ref_img_path).convert('RGB')
         rotate_angle, query_img = self.rotation_transform(ref_img.copy())
 
-        ref_img = transforms.Resize(224)(ref_img)
-        query_img = transforms.Resize(224)(query_img)
+        ref_img = transforms.Resize(336)(ref_img)
+        # query_img = transforms.Resize(224)(query_img)
+        cx, cy = query_img.size
+        left = (cx - 336) // 2
+        top = (cy - 336) // 2
+        right = left + 336
+        bottom = top + 336
+
+        query_img = query_img.crop((left, top, right, bottom))
 
         if self.transform:
             ref_img = self.transform(ref_img)
             query_img = self.transform(query_img)
         else:
-             ref_img = F.to_tensor(ref_img)
-             query_img = F.to_tensor(query_img)
+            ref_img = F.to_tensor(ref_img)
+            query_img = F.to_tensor(query_img)
 
         coordinate = torch.tensor(coordinate, dtype=torch.float)
-        yaw = torch.deg2rad(torch.tensor(rotate_angle, dtype=torch.float))
+        yaw = torch.tensor(rotate_angle)
 
         return ref_img, query_img, coordinate, yaw
 
