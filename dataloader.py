@@ -65,7 +65,7 @@ class BaseDataLoader(Dataset):
     Expected CSV columns: 'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'.
     Subclasses should implement __getitem__.
     """
-    def __init__(self, dataset_file: str, dataset_folder: str, transform=None):
+    def __init__(self, dataset_file: str, dataset_folder: str, transform=None, size=224):
         if not exists(dataset_file):
              raise FileNotFoundError(f"Dataset CSV file not found: {dataset_file}")
         if not os.path.isdir(dataset_folder):
@@ -73,6 +73,7 @@ class BaseDataLoader(Dataset):
 
         self.dataset_folder = dataset_folder
         self.transform = transform
+        self.img_size = size
         self.ref_imgs, self.coordinates = self._load_dataset(dataset_file)
 
         self.rotate_angles = list(range(-180, 180, 15))
@@ -116,7 +117,7 @@ class PoseDataLoader(BaseDataLoader):
     """
     Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
     """
-    def __init__(self, dataset_file, dataset_folder, transform=None):
+    def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
         super().__init__(dataset_file, dataset_folder, transform)
 
     def __getitem__(self, idx):
@@ -126,13 +127,13 @@ class PoseDataLoader(BaseDataLoader):
         ref_img = IM.open(ref_img_path).convert('RGB')
         rotate_angle, query_img = self.rotation_transform(ref_img.copy())
 
-        ref_img = transforms.Resize(336)(ref_img)
-        # query_img = transforms.Resize(224)(query_img)
+        ref_img = transforms.Resize(self.img_size)(ref_img)
+        # query_img = transforms.Resize(self.img_size)(query_img)
         cx, cy = query_img.size
-        left = (cx - 336) // 2
-        top = (cy - 336) // 2
-        right = left + 336
-        bottom = top + 336
+        left = (cx - self.img_size) // 2
+        top = (cy - self.img_size) // 2
+        right = left + self.img_size
+        bottom = top + self.img_size
 
         query_img = query_img.crop((left, top, right, bottom))
 
@@ -623,6 +624,7 @@ class GeoCLIPDataModule(pl.LightningDataModule):
 
         if self.hparams.dataset_type == 'Pose':
             TrainValPredDatasetClass = PoseDataLoader
+            # TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader(csv, folder, transform, size=self.hparams.image_size)
         elif self.hparams.dataset_type == 'PoseV2':
             # PoseDataLoaderV2 needs size explicitly if transform doesn't handle it
             # Our transforms now handle it, but we pass it for clarity if needed internally
@@ -642,13 +644,15 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             self.train_dataset = TrainValPredDatasetClass(
                 dataset_file=self.hparams.train_csv,
                 dataset_folder=self.hparams.dataset_folder,
-                transform=self.train_transform
+                transform=self.train_transform,
+                size=self.hparams.image_size
             )
             # Use the same dataset class type for validation, but with validation transform
             self.val_dataset = TrainValPredDatasetClass(
                 dataset_file=self.hparams.val_csv,
                 dataset_folder=self.hparams.dataset_folder,
-                transform=self.val_transform
+                transform=self.val_transform,
+                size=self.hparams.image_size
             )
             print(f"Train dataset size: {len(self.train_dataset)}")
             print(f"Validation dataset size: {len(self.val_dataset)}")
@@ -657,7 +661,8 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             self.val_dataset = TrainValPredDatasetClass(
                 dataset_file=self.hparams.val_csv,
                 dataset_folder=self.hparams.dataset_folder,
-                transform=self.val_transform
+                transform=self.val_transform,
+                size=self.hparams.image_size
             )
             print(f"Validation dataset size: {len(self.val_dataset)}")
             
@@ -676,7 +681,8 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             self.predict_dataset = TrainValPredDatasetClass(
                 dataset_file=predict_csv_path,
                 dataset_folder=self.hparams.dataset_folder,
-                transform=self.test_transform # Use test transform for prediction
+                transform=self.test_transform, # Use test transform for prediction
+                size=self.hparams.image_size
             )
             print(f">\tPredict dataset size: {len(self.predict_dataset)}")
 
