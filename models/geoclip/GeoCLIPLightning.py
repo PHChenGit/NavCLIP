@@ -59,7 +59,7 @@ class GeoCLIPLightning(pl.LightningModule):
         Only work at prediction stage.
         For estimate uav orientation and refine coordinates
         """
-        self.mapglue = torch.jit.load('/home/rvl1421/Documents/hsun/hc-geoclip/MapGlue/weights/fastmapglue_model.pt') 
+        self.mapglue = torch.jit.load(Path('~/Documents/hsun/NavCLIP/models/MapGlue/weights/fastmapglue_model.pt').expanduser())
         self.mapglue.eval()
         if sat_img:
             self.sat_img = IM.open(sat_img).convert('RGB')
@@ -219,7 +219,7 @@ class GeoCLIPLightning(pl.LightningModule):
 
         best_pred_coordinates = pred_coordinate
         for radius in [0.3, 0.2, 0.1]:
-            neighbor_coord, neighbor_imgs = get_neighbors(self.sat_img, best_pred_coordinates[0], best_yaw_pred, radius=radius, crop_size=(336, 336))
+            neighbor_coord, neighbor_imgs = get_neighbors(self.sat_img, best_pred_coordinates[0], best_yaw_pred, radius=radius, crop_size=(224, 224))
 
             try:
                 fine_H_pred, fine_yaw_pred, fine_matches = estimate_rotation_angle(self.mapglue, np.array(restored_query_imgs), np.array(neighbor_imgs[0]))
