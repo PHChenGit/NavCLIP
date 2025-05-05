@@ -12,15 +12,14 @@ import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
 from PIL import Image as IM
 
-from geoclip.model.image_encoder import ImageEncoder
-from geoclip.model.location_encoder import LocationEncoder
+from .image_encoder import ImageEncoder
+from .location_encoder import LocationEncoder
 from .misc import (
     load_gallery_data,
-    log_pred_result,
     denormalize_and_restore_image,
     estimate_rotation_angle,
-    calculate_dist,
-    zoom_at
+    crop_image,
+    get_neighbors,
 )
 
 class GeoCLIPLightning(pl.LightningModule):
@@ -68,22 +67,19 @@ class GeoCLIPLightning(pl.LightningModule):
     def load_weights(self, pretrained_dir):
         """Loads weights to the correct device"""
         device = self.device
-        print(f">\tload_weights pretrained_dir: {pretrained_dir}")
+        print(f"load_weights pretrained_dir: {pretrained_dir}")
         
         image_encoder_path = Path(pretrained_dir) / "image_encoder.pth"
-        if image_encoder_path.exists():
-            weights = torch.load(image_encoder_path, map_location=device, weights_only=True)
-            self.image_encoder.load_state_dict(weights)
+        weights = torch.load(image_encoder_path, map_location=device, weights_only=True)
+        self.image_encoder.load_state_dict(weights)
 
         location_encoder_path = Path(pretrained_dir) / "location_encoder.pth"
-        if location_encoder_path.exists():
-            weights = torch.load(location_encoder_path, map_location=device, weights_only=True)
-            self.location_encoder.load_state_dict(weights)
-            
+        weights = torch.load(location_encoder_path, map_location=device, weights_only=True)
+        self.location_encoder.load_state_dict(weights)
+
         logit_scale_path = Path(pretrained_dir) / "logit_scale.pth" 
-        if logit_scale_path.exists():
-            weights = torch.load(logit_scale_path, map_location=device, weights_only=True)
-            self.logit_scale.data = weights.to(device)
+        weights = torch.load(logit_scale_path, map_location=device, weights_only=True)
+        self.logit_scale.data = weights.to(device)
 
     def _initialize_gps_queue(self, queue_size):
         self.hparams.queue_size = queue_size
@@ -134,7 +130,7 @@ class GeoCLIPLightning(pl.LightningModule):
         logits_per_image = logit_scale * (image_features @ location_features.t())
 
         return logits_per_image
-    
+
     def _common_val_test_loss(self, pred_coords, true_coords):
         dist_mae = F.l1_loss(pred_coords, true_coords)
 
@@ -205,70 +201,51 @@ class GeoCLIPLightning(pl.LightningModule):
         top_pred = torch.topk(probs_per_image, top_k, dim=1)
         pred_coordinate = self.gps_gallery[top_pred.indices[0]]
 
-        # img_h, img_w = query_imgs.shape[2], query_imgs.shape[3]
-        # center_x, center_y = pred_coordinate[0].cpu().numpy()
-        center_x, center_y = coordinates[0].cpu().numpy()
-        img_h, img_w = 224, 224
+        img_h, img_w = query_imgs.shape[2], query_imgs.shape[3] # B, C, H, W = [1, 3, 224, 224])
+        best_pred_coordinates = pred_coordinate[0].cpu().numpy()
+        best_pred_img: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
+        restored_query_imgs: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
+        # restored_ref_imgs: IM.Image = denormalize_and_restore_image(ref_imgs)[0] # [224, 224]
+        best_H_pred = None
+        best_yaw_pred = 0.
+        best_matches = None
 
-        half_crop = img_h // 2
-        crop_top = int(center_y - half_crop)
-        crop_bottom = int(center_y + half_crop)
-        crop_left = int(center_x - half_crop)
-        crop_right = int(center_x + half_crop)
+        try:
+            best_H_pred, best_yaw_pred, best_matches = estimate_rotation_angle(self.mapglue, np.array(restored_query_imgs), np.array(best_pred_img))
+        except Exception as e:
+            print(f"pred image not found matches, {e}")
+            best_matches = np.array([])
+            best_H_pred = None
 
-        # left, upper, right, lower
-        crop_box = (
-            crop_left,
-            crop_top,
-            crop_right,
-            crop_bottom
-        )
+        best_pred_coordinates = pred_coordinate
+        for radius in [0.3, 0.2, 0.1]:
+            neighbor_coord, neighbor_imgs = get_neighbors(self.sat_img, best_pred_coordinates[0], best_yaw_pred, radius=radius, crop_size=(336, 336))
 
-        copy_sat_img = self.sat_img.copy()
-        img_pred = copy_sat_img.crop(crop_box)
-        img_pred_h, img_pred_w = img_pred.size
+            try:
+                fine_H_pred, fine_yaw_pred, fine_matches = estimate_rotation_angle(self.mapglue, np.array(restored_query_imgs), np.array(neighbor_imgs[0]))
 
-        # scale = 2
-        # cx, cy = img_pred_h // 2, img_pred_w // 2
-        # resized_img_pred = zoom_at(img_pred, cx, cy, scale)
-        # resized_img_pred_h, resized_img_pred_w = resized_img_pred.size
-        # resized_cx, resized_cy = resized_img_pred_h // 2, resized_img_pred_w // 2
-        restored_query_imgs = denormalize_and_restore_image(query_imgs)[0]
-        H_pred, yaw_pred = estimate_rotation_angle(self.mapglue, np.array(img_pred), np.array(restored_query_imgs))
-        # H_pred, yaw_pred = estimate_rotation_angle(self.mapglue, np.array(resized_img_pred), np.array(restored_query_imgs))
+                if len(fine_matches) > len(best_matches):
+                    best_H_pred = fine_H_pred
+                    best_yaw_pred = fine_yaw_pred
+                    best_matches = fine_matches
+                    best_pred_coordinates = torch.tensor(neighbor_coord).unsqueeze(0)
+            except Exception as e:
+                print(f"refine pred image not found matches, {e}")
 
-        # self.pred_yaw_list.append(yaw_pred)
-        # self.true_yaw_list.append(yaws)
-        top_left_x = center_x - half_crop
-        top_left_y = center_y - half_crop
-        # new_top_left_x = center_x - (resized_img_pred_h * scale/2)
-        # new_top_left_y = center_y - (resized_img_pred_w * scale/2)
-        refine_pred_coordinate = np.array([112, 112, 1]) @ H_pred + np.array([top_left_x, top_left_y, 1])
-        refine_pred_coordinate = torch.Tensor(refine_pred_coordinate[:2]).unsqueeze(0)
+        if best_H_pred is None or not best_H_pred.all():
+            return {
+                "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
+                "pred_fine_coordinate": None,
+                "true_coordinate": coordinates.cpu().numpy(),
+                "pred_yaw_angle": None,
+                "true_yaw": yaws.cpu().numpy()
+            }
 
-        """
-        If refine worse than coarse, back to use coarse
-        """
-        coarse_dist_error = calculate_dist(coordinates.cpu().numpy(), pred_coordinate.cpu().numpy())
-        if coarse_dist_error != 0:
-
-            refine_dist_error = calculate_dist(coordinates.cpu().numpy(), refine_pred_coordinate.cpu().numpy())
-            if refine_dist_error > coarse_dist_error:
-                refine_pred_coordinate = pred_coordinate
-            refine_dist_error = calculate_dist(coordinates.cpu().numpy(), refine_pred_coordinate.cpu().numpy())
-        else:
-            refine_pred_coordinate = pred_coordinate
-
-        # self.pred_coordinate_list.append(pred_coordinate)
-        # self.true_coordinate_list.append(coordinates.cpu().numpy())
-        # pred_dist_mae, pred_dist_rmse = self._common_val_test_loss(pred_coordinate, coordinates)
-
-        # return {"pred_dist_mae_pixel": pred_dist_mae, "pred_dist_rmse_pixel": pred_dist_rmse}
         return {
             "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-            "pred_fine_coordinate": refine_pred_coordinate.detach().cpu().numpy(),
+            "pred_fine_coordinate": best_pred_coordinates.detach().cpu().numpy(),
             "true_coordinate": coordinates.cpu().numpy(),
-            "pred_yaw_angle": yaw_pred,
+            "pred_yaw_angle": best_yaw_pred,
             "true_yaw": yaws.cpu().numpy()
         }
 

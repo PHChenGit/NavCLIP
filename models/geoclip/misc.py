@@ -20,7 +20,6 @@ def load_gallery_data(csv_file: str) -> torch.Tensor:
 
     return gps_tensor
 
-
 def log_pred_result(result: dict, output_path: str, filename: str) -> None:
     full_path = Path(output_path) / filename
     with open(str(full_path), "w") as json_file:
@@ -48,14 +47,14 @@ def denormalize_and_restore_image(normalized_tensor, mean=[0.48145466, 0.4578275
     return restored_images
 
 
-def estimate_rotation_angle(model, ref_img: npt.NDArray, query_img: npt.NDArray, match_threshold: float = 0.7) -> Tuple[npt.NDArray, float]:
+def estimate_rotation_angle(model, ref_img: npt.NDArray, query_img: npt.NDArray) -> Tuple[npt.NDArray, float, npt.NDArray]:
     # Convert BGR to RGB
     image0 = cv2.cvtColor(ref_img, cv2.COLOR_RGB2BGR)
     image1 = cv2.cvtColor(query_img, cv2.COLOR_RGB2BGR)
 
     image0 = torch.from_numpy(image0)
     image1 = torch.from_numpy(image1)
-    num_keypoints = torch.tensor(4096) # Defaults to 2048
+    num_keypoints = torch.tensor(2048) # Defaults to 2048
 
     # Run inference
     # mapglue accept image shape [H, W, C]
@@ -68,14 +67,17 @@ def estimate_rotation_angle(model, ref_img: npt.NDArray, query_img: npt.NDArray,
 
     H_pred, inlier_mask = cv2.findHomography(points0.cpu().numpy(), points1.cpu().numpy(), cv2.USAC_MAGSAC, ransacReprojThreshold=3, maxIters=10000, confidence=0.9999)
 
-    inlier_mask = inlier_mask.ravel() > 0
-    mkpts0 = points0[inlier_mask]
-    mkpts1 = points1[inlier_mask]
+    if H_pred is None or not H_pred.all():
+        raise Exception("H_pred is None")
 
-    H_pred, inlier_mask = cv2.findHomography(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, ransacReprojThreshold=3, maxIters=10000, confidence=0.9999)
+    inlier_mask = inlier_mask.ravel() > 0
+    m_kpts0_valid = points0[inlier_mask]
+    m_kpts1_valid = points1[inlier_mask]
+
     yaw_rad = np.arctan2(H_pred[1, 0], H_pred[0, 0])
     yaw_angle = np.rad2deg(yaw_rad)
-    return H_pred, yaw_angle
+
+    return H_pred, yaw_angle, inlier_mask
 
 def angle_diff(a: float, b: float) -> float:
     diff = (a - b + 180) % 360 - 180
@@ -98,3 +100,80 @@ def zoom_at(img: IM.Image, x: float, y: float, zoom: int):
     img = img.crop((x - w / zoom2, y - h / zoom2, 
                     x + w / zoom2, y + h / zoom2))
     return img.resize((w, h), IM.Resampling.LANCZOS)
+
+
+def crop_image(sat_img: IM.Image, coordinate_center: Tuple[int, int], crop_size: Tuple[int, int]):
+    w, h = crop_size
+    half_crop = w // 2
+    cx, cy = coordinate_center
+    crop_top = int(cy - half_crop)
+    crop_bottom = int(cy + half_crop)
+    crop_left = int(cx - half_crop)
+    crop_right = int(cx + half_crop)
+    crop_box = (
+        crop_left,
+        crop_top,
+        crop_right,
+        crop_bottom
+    )
+    copy_sat_img = sat_img.copy()
+    cropped_image = copy_sat_img.crop(crop_box)
+    return cropped_image
+
+def get_neighbors(sat_img: IM.Image, curr_img_center: Tuple[int, int], heading_angle: float, radius: float=0.3,  crop_size: Tuple[int, int]=(224, 224)):
+    img_0_x, img_0_y = curr_img_center
+    img_1_x, img_1_y = img_0_x, img_0_y - radius
+    img_2_x, img_2_y = img_1_x + radius, img_1_y
+    img_3_x, img_3_y = img_2_x, img_2_y + radius
+    img_4_x, img_4_y = img_3_x, img_3_y + radius
+    img_5_x, img_5_y = img_4_x - radius, img_4_y
+    img_6_x, img_6_y = img_5_x - radius, img_5_y
+    img_7_x, img_7_y = img_6_x, img_6_y - radius
+    img_8_x, img_8_y = img_7_x, img_7_y - radius
+
+    neighbor_cooridnates: List[Tuple[int, int]] = [
+            (img_1_x, img_1_y),
+            (img_2_x, img_2_y),
+            (img_3_x, img_3_y),
+            (img_4_x, img_4_y),
+            (img_5_x, img_5_y),
+            (img_6_x, img_6_y),
+            (img_7_x, img_7_y),
+            (img_8_x, img_8_y),
+        ]
+    neighbor_imgs: List[IM.Image] = []
+
+    if heading_angle >= -22.5 or heading_angle <= 22.5:
+        neighbor_coord = neighbor_cooridnates[0]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif heading_angle > 22.5 and heading_angle <= 67.5:
+        neighbor_coord = neighbor_cooridnates[1]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif heading_angle > 67.5 and heading_angle <= 112.5:
+        neighbor_coord = neighbor_cooridnates[2]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif heading_angle > 112.5 and heading_angle <= 157.5:
+        neighbor_coord = neighbor_cooridnates[3]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif (heading_angle > 157.5 and heading_angle <= 180) or (heading_angle >= -180 and heading_angle < -157.5):
+        neighbor_coord = neighbor_cooridnates[4]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif heading_angle >= -157.5 and heading_angle < -112.5:
+        neighbor_coord = neighbor_cooridnates[5]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif heading_angle >= -112.5 and heading_angle < -67.5:
+        neighbor_coord = neighbor_cooridnates[6]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+    elif heading_angle >= -67.5 and heading_angle < -22.5:
+        neighbor_coord = neighbor_cooridnates[7]
+        img = crop_image(sat_img, neighbor_coord, crop_size)
+        neighbor_imgs.append(img)
+
+    return neighbor_coord, neighbor_imgs
