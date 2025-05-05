@@ -3,13 +3,15 @@ from pathlib import Path
 import json
 from typing import List, Tuple
 
-import torch
-import torchvision.transforms as T
+import cv2
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from PIL import Image as IM
-import cv2
+from tqdm import tqdm
+
+import torch
+import torchvision.transforms as T
 
 file_dir = os.path.dirname(os.path.realpath(__file__))
 
@@ -25,6 +27,25 @@ def log_pred_result(result: dict, output_path: str, filename: str) -> None:
     with open(str(full_path), "w") as json_file:
         json.dump(result, json_file, indent=4)
     print(f">\t Prediction result has been written to {full_path}")
+
+
+def create_gallery(gallery_folder, data_loader):
+    gallery_path = gallery_folder.joinpath("gallery.csv")
+    if not gallery_path.exists():
+        all_pose = []
+        bar = tqdm(
+            enumerate(data_loader),
+            total=len(data_loader),
+            desc="Creating pose gallery",
+        )
+        for i, (_, _, ref_coordinates, _, _) in bar:
+            for coord in ref_coordinates:
+                lat, lon = coord.detach().cpu().numpy()
+                all_pose.append([lat, lon])
+        df = pd.DataFrame(all_pose, columns=["LAT", "LON"])
+        df.to_csv(gallery_path, index=False)
+        print(f"gallery is created successfully: {gallery_path}")
+    return gallery_path
 
 def denormalize_and_restore_image(normalized_tensor, mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) -> List[IM.Image]:
     denorm = T.Normalize(
