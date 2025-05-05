@@ -23,8 +23,11 @@ def load_gallery_data(csv_file: str) -> torch.Tensor:
     return gps_tensor
 
 def log_pred_result(result: dict, output_path: str, filename: str) -> None:
-    full_path = Path(output_path) / filename
-    with open(str(full_path), "w") as json_file:
+    full_path: Path = (Path(output_path) / filename).resolve()
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.touch(exist_ok=True)
+
+    with open(str(full_path.resolve()), "w") as json_file:
         json.dump(result, json_file, indent=4)
     print(f">\t Prediction result has been written to {full_path}")
 
