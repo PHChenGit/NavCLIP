@@ -36,7 +36,7 @@ if __name__ == '__main__':
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
     COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
-    VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
+    VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
 
     datamodule = GeoCLIPDataModule(
         str(TRAIN_CSV),
@@ -45,7 +45,7 @@ if __name__ == '__main__':
         dataset_folder=str(DATASET_ROOT),
         batch_size=args.bs,
         num_workers=args.num_workers,
-        image_size=336,
+        image_size=224,
     )
 
     datamodule.setup('fit')
