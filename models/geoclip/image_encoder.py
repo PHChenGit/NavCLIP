@@ -10,6 +10,7 @@ class ImageEncoder(nn.Module):
     def __init__(self, dim = 768):
         super(ImageEncoder, self).__init__()
         self.self_attention = MultiheadAttention(embed_dim=dim, num_heads=8)
+        self.layer_norm = nn.LayerNorm(dim)
 
         self.mlp = nn.Sequential(nn.Linear(dim, dim),
                                  nn.ReLU(),
@@ -20,7 +21,11 @@ class ImageEncoder(nn.Module):
     def forward(self, x):
         x = x.unsqueeze(1) # [B, 1, 768]
         x = x.permute(1, 0, 2) # seq_len, B, embed_dim = [1, B, 768]
+        x1 = x
         x, _ = self.self_attention(x, x, x)
+        x = x + x1
+        # Apply layer normalization (keeping seq_len first dimension)
+        x = self.layer_norm(x)
         x = x.permute(1, 0, 2)  # change back to batch, seq_len, embed_dim
         x = F.relu(x)
         x = F.dropout(x, p=0.3, training=self.training)
