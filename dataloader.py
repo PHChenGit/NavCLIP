@@ -1,6 +1,7 @@
 import os
 from os.path import exists
 import random
+from enum import Enum
 
 import cv2
 import numpy as np
@@ -65,7 +66,7 @@ class BaseDataLoader(Dataset):
     Expected CSV columns: 'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'.
     Subclasses should implement __getitem__.
     """
-    def __init__(self, dataset_file: str, dataset_folder: str, transform=None, size=224):
+    def __init__(self, dataset_file: str, dataset_folder: str, transform=None, size=224, is_cross_season: bool=False, is_testing: bool=False):
         if not exists(dataset_file):
              raise FileNotFoundError(f"Dataset CSV file not found: {dataset_file}")
         if not os.path.isdir(dataset_folder):
@@ -74,12 +75,18 @@ class BaseDataLoader(Dataset):
         self.dataset_folder = dataset_folder
         self.transform = transform
         self.img_size = size
-        self.ref_imgs, self.coordinates = self._load_dataset(dataset_file)
+        self.is_cross_season = is_cross_season
+        self.is_testing = is_testing
+
+        if self.is_cross_season:
+            self.ref_imgs, self.query_imgs, self.coordinates = self._load_dataset(dataset_file)
+        else:
+            self.ref_imgs, self.coordinates = self._load_dataset(dataset_file)
 
         self.rotate_angles = list(range(-180, 180, 15))
         self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
 
-    def _load_dataset(self, dataset_file: str, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
         try:
             dataset_info = pd.read_csv(dataset_file)
         except Exception as e:
@@ -88,13 +95,21 @@ class BaseDataLoader(Dataset):
         if not required_cols.issubset(dataset_info.columns):
             raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
 
+        if self.is_testing:
+            return self._load_testing_dataset(dataset_file, dataset_info)
+
+        if self.is_cross_season is True:
+            return self._load_cross_season_dataset(dataset_file, dataset_info)
+        else:
+            return self._load_single_season_dataset(dataset_file, dataset_info)
+
+    def _load_single_season_dataset(self, dataset_file: str, dataset_info):
         ref_imgs = []
         coordinates = []
 
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
             ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
-            # ref_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
             if exists(ref_img_path):
                 ref_imgs.append(ref_img_path)
                 latitude = float(row['LAT'])
@@ -105,6 +120,45 @@ class BaseDataLoader(Dataset):
              raise RuntimeError(f"No valid image pairs found based on CSV {dataset_file} and folder {self.dataset_folder}")
 
         return ref_imgs, coordinates
+
+    def _load_cross_season_dataset(self, dataset_file: str, dataset_info):
+        ref_imgs = []
+        query_imgs = []
+        coordinates = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+            if exists(ref_img_path) and exists(query_img_path):
+                ref_imgs.append(ref_img_path)
+                query_imgs.append(query_img_path)
+                latitude = float(row['LAT'])
+                longitude = float(row['LON'])
+                coordinates.append((latitude, longitude))
+
+        if not ref_imgs:
+             raise RuntimeError(f"No valid image pairs found based on CSV {dataset_file} and folder {self.dataset_folder}")
+
+        return ref_imgs, query_imgs, coordinates
+
+    def _load_testing_dataset(self, dataset_file: str, dataset_info):
+        query_imgs = []
+        coordinates = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+            if exists(query_img_path):
+                query_imgs.append(query_img_path)
+                latitude = float(row['LAT'])
+                longitude = float(row['LON'])
+                coordinates.append((latitude, longitude))
+
+        if not query_imgs:
+             raise RuntimeError(f"No valid image pairs found based on CSV {dataset_file} and folder {self.dataset_folder}")
+
+        return query_imgs, coordinates
 
     def __len__(self):
         return len(self.ref_imgs)
@@ -118,7 +172,7 @@ class PoseDataLoader(BaseDataLoader):
     Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
     """
     def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
-        super().__init__(dataset_file, dataset_folder, transform)
+        super().__init__(dataset_file, dataset_folder, transform, size)
 
     def __getitem__(self, idx):
         ref_img_path = self.ref_imgs[idx]
@@ -149,100 +203,39 @@ class PoseDataLoader(BaseDataLoader):
 
         return ref_img, query_img, coordinate, yaw
 
-
-class PoseDataLoaderV2(Dataset):
-    """
-    Loads single image, creates query by rotating it. Uses different CSV columns.
-    Expected CSV columns: 'IMG', 'REF_X', 'REF_Y'.
-    """
-    def __init__(self, dataset_file, dataset_folder, transform=None, size=336):
-        super().__init__()
-        if not exists(dataset_file):
-             raise FileNotFoundError(f"Dataset CSV file not found: {dataset_file}")
-        if not os.path.isdir(dataset_folder):
-             raise NotADirectoryError(f"Dataset image folder not found: {dataset_folder}")
-
-        self.dataset_folder = dataset_folder
-        self.transform = transform # Should include resize and normalization
-        self.imgs, self.coordinates = self._load_dataset(dataset_file)
-        self.size = size # Store size for potential internal use
-
-        # Rotation parameters
-        self.rotate_angles = list(range(-180, 180, 15))
-        self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
-
-    def _load_dataset(self, dataset_file):
-        try:
-            dataset_info = pd.read_csv(dataset_file)
-        except Exception as e:
-            raise IOError(f"Error reading {dataset_file}: {e}")
-
-        # Verify required columns
-        required_cols = {'IMG', 'REF_X', 'REF_Y'}
-        if not required_cols.issubset(dataset_info.columns):
-             raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
-
-        imgs = []
-        coordinates = []
-
-        print(f"Loading dataset info from: {dataset_file}")
-        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
-             img_path = os.path.join(self.dataset_folder, str(row['IMG']))
-             if exists(img_path):
-                 imgs.append(img_path)
-                 try:
-                     # Assuming REF_X, REF_Y are coordinates (maybe pixel or normalized?)
-                     coord_x = float(row['REF_X'])
-                     coord_y = float(row['REF_Y'])
-                     coordinates.append((coord_x, coord_y))
-                 except ValueError as e:
-                     print(f"Warning: Skipping row due to invalid coordinate in {dataset_file}: {row} - {e}")
-                     imgs.pop()
-             else:
-                 print(f"Warning: Image not found, skipping entry: {img_path}")
-
-        if not imgs:
-             raise RuntimeError(f"No valid images found based on CSV {dataset_file} and folder {self.dataset_folder}")
-
-        print(f"Loaded {len(imgs)} valid images.")
-        return imgs, coordinates
-
-    def __len__(self):
-        return len(self.imgs)
+class CrossSeasonPoseDataLoader(BaseDataLoader):
+    def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
+        super().__init__(dataset_file, dataset_folder, transform, size=size, is_cross_season=True)
 
     def __getitem__(self, idx):
-        img_path = self.imgs[idx]
-        coordinate = self.coordinates[idx] # (x, y)
+        ref_img_path = self.ref_imgs[idx]
+        coordinate = self.coordinates[idx]
 
-        try:
-            ref_img = IM.open(img_path).convert('RGB')
-        except Exception as e:
-            print(f"Error opening image file: {img_path}. Skipping index {idx}. Error: {e}")
-            return self.__getitem__((idx + 1) % len(self))
+        ref_img = IM.open(ref_img_path).convert('RGB')
+        query_img = IM.open(ref_img_path).convert('RGB')
+        rotate_angle, query_img = self.rotation_transform(query_img)
 
-        # Create query image by rotating a copy of the reference image
-        # Note: Apply rotation BEFORE other transforms if transforms expect original orientation info implicitly
-        yaw_angle, query_img = self.rotation_transform(ref_img.copy()) # Rotates PIL image
+        ref_img = transforms.Resize(self.img_size)(ref_img)
+        # query_img = transforms.Resize(self.img_size)(query_img)
+        cx, cy = query_img.size
+        left = (cx - self.img_size) // 2
+        top = (cy - self.img_size) // 2
+        right = left + self.img_size
+        bottom = top + self.img_size
 
-        # Apply transformations (which should include resize to self.size and normalization)
+        query_img = query_img.crop((left, top, right, bottom))
+
         if self.transform:
             ref_img = self.transform(ref_img)
             query_img = self.transform(query_img)
         else:
-            # Manual tensor conversion if no transform provided
             ref_img = F.to_tensor(ref_img)
             query_img = F.to_tensor(query_img)
 
-        # Convert coordinate tuple to tensor
         coordinate = torch.tensor(coordinate, dtype=torch.float)
+        yaw = torch.tensor(rotate_angle)
 
-        # Convert yaw angle tensor
-        # Note: Original code used torch.deg2rad. If yaw is directly used, ensure units match model needs.
-        # Here, we keep it as degrees, matching the output of RandomDiscreteRotation.
-        theta = torch.tensor(yaw_angle, dtype=torch.float)
-
-        return ref_img, query_img, coordinate, theta # theta is yaw angle in degrees
-
+        return ref_img, query_img, coordinate, yaw
 
 class PoseDataLoader_Warping(BaseDataLoader):
     """
@@ -488,98 +481,58 @@ class PoseDataLoader_Warping_SIFT(PoseDataLoader_Warping):
         # Return transformed RGB ref/query, UNTRANSFORMED grayscale numpy ref/query, coords, angles
         return ref_img_transformed, query_img_transformed, ref_img_rot_np, query_img_rot_np, coordinate, roll, yaw, pitch
 
-
-class TestPoseDataLoader(Dataset):
+class TestPoseDataLoader(BaseDataLoader):
     """
-    Loads only query images and coordinates for testing/prediction.
-    Expected CSV cols: 'QUERY_IMG', 'LAT', 'LON'. (Uses BaseDataLoader's logic implicitly)
+    Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
     """
-    def __init__(self, dataset_file, dataset_folder, transform=None):
-        # Simplified load - only need query images and coords for testing
-        if not exists(dataset_file):
-             raise FileNotFoundError(f"Dataset CSV file not found: {dataset_file}")
-        if not os.path.isdir(dataset_folder):
-             raise NotADirectoryError(f"Dataset image folder not found: {dataset_folder}")
-
-        self.dataset_folder = dataset_folder
-        self.transform = transform
-        self.query_imgs, self.coordinates = self._load_dataset(dataset_file)
-
-    def _load_dataset(self, dataset_file):
-        try:
-            dataset_info = pd.read_csv(dataset_file)
-        except Exception as e:
-            raise IOError(f"Error reading {dataset_file}: {e}")
-
-        # Verify required columns for test set
-        required_cols = {'QUERY_IMG', 'LAT', 'LON'} # Adjust if test CSV has different columns
-        if not required_cols.issubset(dataset_info.columns):
-             raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
-
-        query_imgs = []
-        coordinates = []
-
-        print(f"Loading testing/prediction dataset info from: {dataset_file}")
-        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking query image paths"):
-            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
-            if exists(query_img_path):
-                query_imgs.append(query_img_path)
-                try:
-                    latitude = float(row['LAT'])
-                    longitude = float(row['LON'])
-                    coordinates.append((latitude, longitude))
-                except ValueError as e:
-                    print(f"Warning: Skipping row due to invalid coordinate in {dataset_file}: {row} - {e}")
-                    query_imgs.pop()
-            else:
-                print(f"Warning: Query image not found, skipping entry: {query_img_path}")
-
-
-        if not query_imgs:
-             raise RuntimeError(f"No valid query images found based on CSV {dataset_file} and folder {self.dataset_folder}")
-
-        print(f"Loaded {len(query_imgs)} valid query images for testing/prediction.")
-        return query_imgs, coordinates
-
-    def __len__(self):
-        return len(self.query_imgs)
+    def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
+        super().__init__(dataset_file, dataset_folder, transform, size, is_testing=True)
 
     def __getitem__(self, idx):
-        query_img_path = self.query_imgs[idx]
+        query_img_path = self.ref_imgs[idx]
         coordinate = self.coordinates[idx]
 
-        try:
-            query_img = IM.open(query_img_path).convert('RGB')
-        except Exception as e:
-            print(f"Error opening image file: {query_img_path}. Skipping index {idx}. Error: {e}")
-            return self.__getitem__((idx + 1) % len(self))
+        query_img = IM.open(query_img_path).convert('RGB')
+        rotate_angle, query_img = self.rotation_transform(query_img.copy())
 
-        # Apply transformations (Resize, Normalize)
+        cx, cy = query_img.size
+        left = (cx - self.img_size) // 2
+        top = (cy - self.img_size) // 2
+        right = left + self.img_size
+        bottom = top + self.img_size
+
+        query_img = query_img.crop((left, top, right, bottom))
+
         if self.transform:
-            query_img_transformed = self.transform(query_img)
+            query_img = self.transform(query_img)
         else:
-            # Basic transform if none provided
-            query_img_transformed = F.to_tensor(transforms.Resize(224)(query_img)) # Example size
+            query_img = F.to_tensor(query_img)
 
         coordinate = torch.tensor(coordinate, dtype=torch.float)
+        yaw = torch.tensor(rotate_angle)
 
-        # Return transformed image, original path (optional), coordinate
-        return query_img_transformed, query_img_path, coordinate
+        return query_img, coordinate, yaw
 
-
-# --- PyTorch Lightning DataModule ---
+class DataLoaderTypesEnum(Enum):
+    Pose = 'Pose'
+    CrossSeasonPose = 'CrossSeasonPose'
+    WarpingOmniGlue = 'WarpingOmniGlue'
+    WarpingLightGlue = 'WarpingLightGlue'
+    WarpingSIFT = 'WarpingSIFT'
+    TestPose = 'TestPose'
 
 class GeoCLIPDataModule(pl.LightningDataModule):
     def __init__(self,
-                train_csv: str,
-                val_csv: str,
-                predict_csv: str,
                 dataset_folder: str,
+                train_csv: str = None,
+                val_csv: str = None,
+                predict_csv: str = None,
                 test_csv: str = None,
-                dataset_type: str = 'Pose', # e.g., 'Pose', 'PoseV2', 'WarpingOmniGlue', 'WarpingLightGlue', 'WarpingSIFT'
+                dataset_type: DataLoaderTypesEnum = DataLoaderTypesEnum.Pose,
                 image_size: int = 224,
                 batch_size: int = 32,
-                num_workers: int = 4):
+                num_workers: int = 4,
+                is_cross_season: bool = False):
         """
         PyTorch Lightning DataModule for GeoCLIP datasets.
 
@@ -597,17 +550,11 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             num_workers: The number of workers for the dataloaders.
         """
         super().__init__()
-        # Validate dataset_type
-        valid_types = ['Pose', 'PoseV2', 'WarpingOmniGlue', 'WarpingLightGlue', 'WarpingSIFT']
-        if dataset_type not in valid_types:
-            raise ValueError(f"Invalid dataset_type '{dataset_type}'. Must be one of {valid_types}")
+        if not isinstance(dataset_type, DataLoaderTypesEnum):
+            raise ValueError(
+                f"Invalid dataset_type '{dataset_type}'. Must be one of {DataLoaderTypesEnum._member_names_}"
+            )
 
-        """
-        Pytorch lightning provide save_hyperparameters().
-        Use save_hyperparameters() within your LightningModule’s __init__ method.
-        It will enable Lightning to store all the provided arguments under the self.hparams attribute.
-        These hyperparameters will also be stored within the model checkpoint, which simplifies model re-instantiation after training.
-        """
         self.save_hyperparameters()
 
         self.train_dataset = None
@@ -622,22 +569,20 @@ class GeoCLIPDataModule(pl.LightningDataModule):
     def setup(self, stage: str = None):
         """Create the datasets based on the stage."""
 
-        if self.hparams.dataset_type == 'Pose':
+        if self.hparams.dataset_type is DataLoaderTypesEnum.Pose:
             TrainValPredDatasetClass = PoseDataLoader
-            # TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader(csv, folder, transform, size=self.hparams.image_size)
-        elif self.hparams.dataset_type == 'PoseV2':
-            # PoseDataLoaderV2 needs size explicitly if transform doesn't handle it
-            # Our transforms now handle it, but we pass it for clarity if needed internally
-            TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoaderV2(csv, folder, transform, size=self.hparams.image_size)
-        elif self.hparams.dataset_type == 'WarpingOmniGlue':
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.CrossSeasonPose:
+            TrainValPredDatasetClass = CrossSeasonPoseDataLoader
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.WarpingOmniGlue:
             TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_OmniGlue(csv, folder, transform, size=self.hparams.image_size)
-        elif self.hparams.dataset_type == 'WarpingLightGlue':
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.WarpingLightGlue:
             TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_LightGlue(csv, folder, transform, size=self.hparams.image_size)
-        elif self.hparams.dataset_type == 'WarpingSIFT':
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.WarpingSIFT:
             TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_SIFT(csv, folder, transform, size=self.hparams.image_size)
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.TestPose:
+            PredDatasetClass = TestPoseDataLoader
         else:
             raise ValueError(f"Unknown dataset_type: {self.hparams.dataset_type}")
-
 
         if stage == 'fit':
             print(f"Setting up 'fit' stage with dataset type: {self.hparams.dataset_type}")
@@ -678,7 +623,7 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             # Use predict_csv if provided, otherwise fall back to test_csv
             predict_csv_path = self.hparams.predict_csv if self.hparams.predict_csv else self.hparams.test_csv
             print(f">\tSetting up 'predict' stage using CSV: {predict_csv_path}")
-            self.predict_dataset = TrainValPredDatasetClass(
+            self.predict_dataset = PredDatasetClass(
                 dataset_file=predict_csv_path,
                 dataset_folder=self.hparams.dataset_folder,
                 transform=self.test_transform, # Use test transform for prediction

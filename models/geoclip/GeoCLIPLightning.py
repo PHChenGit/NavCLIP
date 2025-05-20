@@ -187,7 +187,7 @@ class GeoCLIPLightning(pl.LightningModule):
         return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        ref_imgs, query_imgs, coordinates, yaws = batch
+        query_imgs, coordinates, yaws = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
@@ -205,7 +205,6 @@ class GeoCLIPLightning(pl.LightningModule):
         best_pred_coordinates = pred_coordinate[0].cpu().numpy()
         best_pred_img: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
         restored_query_imgs: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
-        # restored_ref_imgs: IM.Image = denormalize_and_restore_image(ref_imgs)[0] # [224, 224]
         best_H_pred = None
         best_yaw_pred = 0.
         best_matches = None
@@ -217,33 +216,16 @@ class GeoCLIPLightning(pl.LightningModule):
             best_matches = np.array([])
             best_H_pred = None
 
-        best_pred_coordinates = pred_coordinate
-        for radius in [0.3, 0.2, 0.1]:
-            neighbor_coord, neighbor_imgs = get_neighbors(self.sat_img, best_pred_coordinates[0], best_yaw_pred, radius=radius, crop_size=(224, 224))
-
-            try:
-                fine_H_pred, fine_yaw_pred, fine_matches = estimate_rotation_angle(self.mapglue, np.array(restored_query_imgs), np.array(neighbor_imgs[0]))
-
-                if len(fine_matches) > len(best_matches):
-                    best_H_pred = fine_H_pred
-                    best_yaw_pred = fine_yaw_pred
-                    best_matches = fine_matches
-                    best_pred_coordinates = torch.tensor(neighbor_coord).unsqueeze(0)
-            except Exception as e:
-                print(f"refine pred image not found matches, {e}")
-
-        if best_H_pred is None or not best_H_pred.all():
+        if best_H_pred is None:
             return {
                 "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-                "pred_fine_coordinate": None,
                 "true_coordinate": coordinates.cpu().numpy(),
-                "pred_yaw_angle": None,
+                "pred_yaw_angle": np.nan,
                 "true_yaw": yaws.cpu().numpy()
             }
 
         return {
             "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-            "pred_fine_coordinate": best_pred_coordinates.detach().cpu().numpy(),
             "true_coordinate": coordinates.cpu().numpy(),
             "pred_yaw_angle": best_yaw_pred,
             "true_yaw": yaws.cpu().numpy()

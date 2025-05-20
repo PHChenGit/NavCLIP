@@ -7,7 +7,7 @@ import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from dataloader import GeoCLIPDataModule
+from dataloader import GeoCLIPDataModule, DataLoaderTypesEnum
 from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
 from models.geoclip.misc import create_gallery
 from mymodelckpt import MyModelCheckpoint
@@ -39,13 +39,14 @@ if __name__ == '__main__':
     VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
 
     datamodule = GeoCLIPDataModule(
-        str(TRAIN_CSV),
-        str(VAL_CSV),
-        str(PRED_CSV),
         dataset_folder=str(DATASET_ROOT),
+        train_csv=str(TRAIN_CSV),
+        val_csv=str(VAL_CSV),
+        dataset_type=DataLoaderTypesEnum.CrossSeasonPose,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224,
+        is_cross_season=True,
     )
 
     datamodule.setup('fit')

@@ -8,7 +8,7 @@ import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
 
-from dataloader import GeoCLIPDataModule
+from dataloader import GeoCLIPDataModule, DataLoaderTypesEnum
 from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
 from models.geoclip.misc import log_pred_result, calculate_angle_error
 
@@ -20,19 +20,16 @@ def main(args):
     DATASET_ROOT_PATH = args.ds_folder
 
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
-    TRAIN_CSV = DATASET_ROOT.joinpath('train', CSV_FILE)
-    VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
     COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', args.dataset_file)
     print(f">\tCoordinate gallery path: {COORDINATE_GALLERY}")
     datamodule = GeoCLIPDataModule(
-        str(TRAIN_CSV),
-        str(VAL_CSV),
-        str(PRED_CSV),
         dataset_folder=str(DATASET_ROOT),
+        predict_csv=str(PRED_CSV),
+        dataset_type=DataLoaderTypesEnum.TestPose,
         batch_size=args.bs,
         num_workers=args.num_workers,
-        image_size=336
+        image_size=224
     )
     datamodule.setup('predict')
 
@@ -46,13 +43,13 @@ def main(args):
 
     # print(pred_result)
     pred_coarse_coordinate_list = []
-    pred_fine_coordinate_list = []
     true_coordinate_list = []
     pred_yaw_list = []
     true_yaw_list = []
     for data in pred_result:
+        if data["pred_yaw_angle"] == np.nan:
+            continue
         pred_coarse_coordinate_list.append(data["pred_coarse_coordinate"])
-        pred_fine_coordinate_list.append(data["pred_fine_coordinate"])
         true_coordinate_list.append(data["true_coordinate"])
         pred_yaw_list.append(data["pred_yaw_angle"])
         true_yaw_list.append(data["true_yaw"])
@@ -61,13 +58,6 @@ def main(args):
     pred_dist_mae_pixel = round(pred_dist_mae_pixel.detach().item(), 2)
     pred_dist_rmse_pixel = round(pred_dist_rmse_pixel.detach().item(), 2)
 
-    pred_fine_dist_mae_pixel, pred_fine_dist_rmse_pixel = model._common_val_test_loss(
-        torch.Tensor(np.array(pred_fine_coordinate_list)),
-        torch.Tensor(np.array(true_coordinate_list))
-    )
-    pred_fine_dist_mae_pixel = round(pred_fine_dist_mae_pixel.detach().item(), 2)
-    pred_fine_dist_rmse_pixel = round(pred_fine_dist_rmse_pixel.detach().item(), 2)
-
     pred_yaw_mae, pred_yaw_rmse = calculate_angle_error(pred_yaw_list, true_yaw_list)
     pred_yaw_mae = round(pred_yaw_mae, 2)
     pred_yaw_rmse = round(pred_yaw_rmse, 2)
@@ -75,12 +65,10 @@ def main(args):
     data = {
         "Pred Coarse Dist MAE(pixel)": pred_dist_mae_pixel,
         "Pred Coarse Dist RMSE(pixel)": pred_dist_rmse_pixel,
-        "Pred Fine Dist MAE(pixel)": pred_fine_dist_mae_pixel,
-        "Pred Fine Dist RMSE(pixel)": pred_fine_dist_rmse_pixel,
         "Pred Yaw MAE(degree)": pred_yaw_mae,
         "Pred Yaw RMSE(degree)": pred_yaw_rmse
     }
-    log_pred_result(data, Path(args.output_dir), "test_result.json")
+    log_pred_result(data, Path(args.output_dir), "test_result_3.json")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Inference GeoCLIP")
