@@ -34,15 +34,14 @@ if __name__ == '__main__':
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
     TRAIN_CSV = DATASET_ROOT.joinpath('train', CSV_FILE)
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
-    PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
     COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
     VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
+    COORDINATE_GALLERY = TRAIN_CSV
 
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
         train_csv=str(TRAIN_CSV),
-        val_csv=str(VAL_CSV),
-        dataset_type=DataLoaderTypesEnum.CrossSeasonPose,
+        dataset_type=DataLoaderTypesEnum.VisLoc,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224,
@@ -55,8 +54,8 @@ if __name__ == '__main__':
     if not COORDINATE_GALLERY.exists():
         create_gallery(COORDINATE_GALLERY.parent, train_dataloader)
 
-    if not VAL_COORDINATE_GALLERY.exists():
-        create_gallery(VAL_COORDINATE_GALLERY.parent, val_dataloader)
+    # if not VAL_COORDINATE_GALLERY.exists():
+    #     create_gallery(VAL_COORDINATE_GALLERY.parent, val_dataloader)
 
     checkpoint_callback = MyModelCheckpoint(
         dirpath=f"{args.ckpt_folder}",
@@ -68,7 +67,7 @@ if __name__ == '__main__':
     )
     early_stop_callback = EarlyStopping(
         monitor='val_dist_MAE',
-        patience=20, # 連續 n 個 Epoch 沒有改善就停止
+        patience=15, # 連續 n 個 Epoch 沒有改善就停止
         verbose=True,
         mode='min'
     )

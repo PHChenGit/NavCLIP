@@ -7,10 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR, MultiStepLR
+import torchvision.transforms as T
 
 import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
 from PIL import Image as IM
+import rasterio
 
 from .image_encoder import ImageEncoder
 from .location_encoder import LocationEncoder
@@ -18,8 +20,7 @@ from .misc import (
     load_gallery_data,
     denormalize_and_restore_image,
     estimate_rotation_angle,
-    crop_image,
-    get_neighbors,
+    geo_to_pixel
 )
 
 class GeoCLIPLightning(pl.LightningModule):
@@ -62,7 +63,8 @@ class GeoCLIPLightning(pl.LightningModule):
         self.mapglue = torch.jit.load(Path('~/Documents/hsun/NavCLIP/models/MapGlue/weights/fastmapglue_model.pt').expanduser())
         self.mapglue.eval()
         if sat_img:
-            self.sat_img = IM.open(sat_img).convert('RGB')
+            # self.sat_img = IM.open(sat_img).convert('RGB')
+            self.sat_img = sat_img
 
     def load_weights(self, pretrained_dir):
         """Loads weights to the correct device"""
@@ -187,7 +189,26 @@ class GeoCLIPLightning(pl.LightningModule):
         return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        query_imgs, coordinates, yaws = batch
+        # with rasterio.open(self.sat_img) as src:
+        #     tiff_crs = src.crs
+        #     sat_width = src.width
+        #     sat_height = src.height
+        #     geo_transform = src.transform
+        #     # print(f"TIFF Image CRS: {tiff_crs}")
+        #     # print(f"TIFF Image Transform: {geo_transform}")
+
+        #     satellite_img = src.read()
+            
+        #     # 如果數據是多波段的，取前三個波段作為 RGB
+        #     if satellite_img.shape[0] >= 3:
+        #         # 將數據從(bands, height, width)轉換為(height, width, bands)
+        #         satellite_img = np.transpose(satellite_img[0:3], (1, 2, 0))
+        #     elif satellite_img.shape[0] == 1:
+        #         # 如果只有一個波段，複製為3通道灰度圖
+        #         satellite_img = np.transpose(satellite_img, (1, 2, 0))
+        #         satellite_img = np.concatenate([satellite_img] * 3, axis=2)
+
+        sat_imgs, query_imgs, coordinates, yaws, sat_img_ori, query_img_ori = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
@@ -203,26 +224,51 @@ class GeoCLIPLightning(pl.LightningModule):
 
         img_h, img_w = query_imgs.shape[2], query_imgs.shape[3] # B, C, H, W = [1, 3, 224, 224])
         best_pred_coordinates = pred_coordinate[0].cpu().numpy()
-        best_pred_img: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
-        restored_query_imgs: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
+        # print(f"best_pred_coordinates: {best_pred_coordinates}")
+        # # best_pred_img: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
+
+        # # lat, lon
+        # print(f">\t[DEBUG] lat: {best_pred_coordinates[0]}, lon: {best_pred_coordinates[1]}")
+        # pixel_x, pixel_y = geo_to_pixel(best_pred_coordinates[0], best_pred_coordinates[1], geo_transform, sat_width, sat_height)
+        # pixel_x = np.round(pixel_x)
+        # pixel_y = np.round(pixel_y)
+        # print(f"lat: {np.round(best_pred_coordinates[0], 2)}, lon: {np.round(best_pred_coordinates[1], 2)}")
+        # print(f"pred: {pixel_x}, {pixel_y}, true: (33911, 18963)")
+
+        # exit()
+        # crop_size = 800
+        # half_crop = crop_size // 2
+        # x_min = max(0, pixel_x - half_crop)
+        # y_min = max(0, pixel_y - half_crop)
+        # x_max = min(sat_width, pixel_x + half_crop)
+        # y_max = min(sat_height, pixel_y + half_crop)
+        # cropped_img = satellite_img[y_min:y_max, x_min:x_max]
+        # best_pred_img = IM.fromarray(cropped_img.astype(np.uint8))
+        # best_pred_img.show()
+
+        # restored_query_imgs: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
+        # restored_sat_imgs = denormalize_and_restore_image(sat_imgs)[0]
+
+        query_img_ori = T.ToPILImage()(query_img_ori[0])
+        sat_img_ori = T.ToPILImage()(sat_img_ori[0])
         best_H_pred = None
         best_yaw_pred = 0.
         best_matches = None
 
         try:
-            best_H_pred, best_yaw_pred, best_matches = estimate_rotation_angle(self.mapglue, np.array(restored_query_imgs), np.array(best_pred_img))
+            best_H_pred, best_yaw_pred, best_matches = estimate_rotation_angle(self.mapglue, np.array(query_img_ori), np.array(sat_img_ori))
         except Exception as e:
             print(f"pred image not found matches, {e}")
             best_matches = np.array([])
             best_H_pred = None
 
-        if best_H_pred is None:
-            return {
-                "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-                "true_coordinate": coordinates.cpu().numpy(),
-                "pred_yaw_angle": np.nan,
-                "true_yaw": yaws.cpu().numpy()
-            }
+        # if best_H_pred is None:
+        #     return {
+        #         "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
+        #         "true_coordinate": coordinates.cpu().numpy(),
+        #         "pred_yaw_angle": np.nan,
+        #         "true_yaw": yaws.cpu().numpy()
+        #     }
 
         return {
             "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),

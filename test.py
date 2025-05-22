@@ -20,13 +20,15 @@ def main(args):
     DATASET_ROOT_PATH = args.ds_folder
 
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
-    PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', args.dataset_file)
+    # PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
+    PRED_CSV = DATASET_ROOT.joinpath(CSV_FILE)
+    # COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', args.dataset_file)
+    COORDINATE_GALLERY = PRED_CSV
     print(f">\tCoordinate gallery path: {COORDINATE_GALLERY}")
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
         predict_csv=str(PRED_CSV),
-        dataset_type=DataLoaderTypesEnum.TestPose,
+        dataset_type=DataLoaderTypesEnum.TestVisLoc,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224
@@ -68,7 +70,8 @@ def main(args):
         "Pred Yaw MAE(degree)": pred_yaw_mae,
         "Pred Yaw RMSE(degree)": pred_yaw_rmse
     }
-    log_pred_result(data, Path(args.output_dir), "test_result_3.json")
+    print(data)
+    log_pred_result(data, Path(args.output_dir), "test_result_2.json")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Inference GeoCLIP")

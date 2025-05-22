@@ -10,7 +10,7 @@ from tqdm import tqdm
 from PIL import Image as IM
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 import torchvision.transforms.functional as F
 
@@ -148,7 +148,7 @@ class BaseDataLoader(Dataset):
 
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
-            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
             if exists(query_img_path):
                 query_imgs.append(query_img_path)
                 latitude = float(row['LAT'])
@@ -513,6 +513,178 @@ class TestPoseDataLoader(BaseDataLoader):
 
         return query_img, coordinate, yaw
 
+
+class VisLocDataLoader(Dataset):
+    """
+    Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
+    """
+    def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
+        if not exists(dataset_file):
+             raise FileNotFoundError(f"Dataset CSV file not found: {dataset_file}")
+        if not os.path.isdir(dataset_folder):
+             raise NotADirectoryError(f"Dataset image folder not found: {dataset_folder}")
+
+        self.dataset_folder = dataset_folder
+        self.transform = transform
+        self.img_size = size
+
+        self.rotate_angles = list(range(-180, 180, 15))
+        self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
+
+        self.sat_imgs, self.drone_imgs, self.coordinates = self._load_dataset(dataset_file, required_cols={'SAT_IMG', 'DRONE_IMG', 'LAT', 'LON'})
+
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        sat_imgs = []
+        drone_imgs = []
+        coordinates = []
+        # drone_heading_angles = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['SAT_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['DRONE_IMG']))
+
+            if exists(ref_img_path) and exists(query_img_path):
+                sat_imgs.append(ref_img_path)
+                drone_imgs.append(query_img_path)
+                latitude = float(row['LAT'])
+                longitude = float(row['LON'])
+                coordinates.append((latitude, longitude))
+                # yaw = float(row['YAW'])
+                # drone_heading_angles.append(yaw)
+
+        if not sat_imgs:
+             raise RuntimeError(f"No valid image pairs found based on CSV {dataset_file} and folder {self.dataset_folder}")
+        
+        assert len(sat_imgs) == len(drone_imgs)
+        assert len(sat_imgs) == len(coordinates)
+        # assert len(sat_imgs) == len(drone_heading_angles)
+
+        return sat_imgs, drone_imgs, coordinates
+
+    def __len__(self):
+        return len(self.sat_imgs)
+
+    def __getitem__(self, idx):
+        sat_img_path = self.sat_imgs[idx]
+        query_img_path = self.drone_imgs[idx]
+        coordinate = self.coordinates[idx]
+        # yaw = self.yaws[idx]
+
+        sat_img = IM.open(sat_img_path).convert('RGB')
+        sat_img_ori = sat_img.copy()
+        query_img = IM.open(query_img_path).convert('RGB')
+        query_img_ori = query_img.copy()
+
+        yaw, query_img = self.rotation_transform(query_img)
+
+        sat_img = transforms.Resize(self.img_size)(sat_img)
+        cx, cy = query_img.size
+        left = (cx - self.img_size) // 2
+        top = (cy - self.img_size) // 2
+        right = left + self.img_size
+        bottom = top + self.img_size
+
+        query_img = query_img.crop((left, top, right, bottom))
+
+        if self.transform:
+            sat_img = self.transform(sat_img)
+            query_img = self.transform(query_img)
+        else:
+            sat_img = F.to_tensor(sat_img)
+            query_img = F.to_tensor(query_img)
+
+        coordinate = torch.tensor(coordinate, dtype=torch.float)
+        yaw = torch.tensor(yaw)
+
+        return sat_img, query_img, coordinate, yaw
+    
+class TestVisLocDataLoader(Dataset):
+    def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
+        if not exists(dataset_file):
+             raise FileNotFoundError(f"Dataset CSV file not found: {dataset_file}")
+        if not os.path.isdir(dataset_folder):
+             raise NotADirectoryError(f"Dataset image folder not found: {dataset_folder}")
+
+        self.dataset_folder = dataset_folder
+        self.transform = transform
+        self.img_size = size
+
+        self.sat_imgs, self.drone_imgs, self.coordinates, self.yaws = self._load_dataset(dataset_file, required_cols={'SAT_IMG', 'DRONE_IMG', 'LAT', 'LON', 'YAW'})
+
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        sat_imgs = []
+        drone_imgs = []
+        coordinates = []
+        drone_heading_angles = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['SAT_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['DRONE_IMG']))
+
+            if exists(ref_img_path) and exists(query_img_path):
+                sat_imgs.append(ref_img_path)
+                drone_imgs.append(query_img_path)
+                latitude = float(row['LAT'])
+                longitude = float(row['LON'])
+                coordinates.append((latitude, longitude))
+                yaw = float(row['YAW'])
+                drone_heading_angles.append(yaw)
+
+        if not sat_imgs:
+             raise RuntimeError(f"No valid image pairs found based on CSV {dataset_file} and folder {self.dataset_folder}")
+        
+        assert len(sat_imgs) == len(drone_imgs)
+        assert len(sat_imgs) == len(coordinates)
+        assert len(sat_imgs) == len(drone_heading_angles)
+
+        return sat_imgs, drone_imgs, coordinates, drone_heading_angles
+    
+    def __len__(self):
+        return len(self.sat_imgs)
+
+    def __getitem__(self, idx):
+        sat_img_path = self.sat_imgs[idx]
+        query_img_path = self.drone_imgs[idx]
+        coordinate = self.coordinates[idx]
+        yaw = self.yaws[idx]
+
+        sat_img = IM.open(sat_img_path).convert('RGB')
+        sat_img_ori = sat_img.copy()
+        query_img = IM.open(query_img_path).convert('RGB')
+        query_img_ori = query_img.copy()
+
+        query_img = transforms.Resize(self.img_size)(query_img)
+
+        if self.transform:
+            sat_img = self.transform(sat_img)
+            query_img = self.transform(query_img)
+        else:
+            sat_img = F.to_tensor(sat_img)
+            query_img = F.to_tensor(query_img)
+
+        coordinate = torch.tensor(coordinate, dtype=torch.float)
+        yaw = torch.tensor(yaw)
+
+        return sat_img, query_img, coordinate, yaw, F.to_tensor(sat_img_ori),  F.to_tensor(query_img_ori)
+
 class DataLoaderTypesEnum(Enum):
     Pose = 'Pose'
     CrossSeasonPose = 'CrossSeasonPose'
@@ -520,6 +692,12 @@ class DataLoaderTypesEnum(Enum):
     WarpingLightGlue = 'WarpingLightGlue'
     WarpingSIFT = 'WarpingSIFT'
     TestPose = 'TestPose'
+
+    #####
+    # Public Datasets
+    #####
+    VisLoc = 'VisLoc'
+    TestVisLoc = 'TestVisLoc'
 
 class GeoCLIPDataModule(pl.LightningDataModule):
     def __init__(self,
@@ -581,24 +759,39 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_SIFT(csv, folder, transform, size=self.hparams.image_size)
         elif self.hparams.dataset_type is DataLoaderTypesEnum.TestPose:
             PredDatasetClass = TestPoseDataLoader
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.VisLoc:
+            TrainValPredDatasetClass = VisLocDataLoader
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.TestVisLoc:
+            PredDatasetClass = TestVisLocDataLoader
         else:
             raise ValueError(f"Unknown dataset_type: {self.hparams.dataset_type}")
 
         if stage == 'fit':
             print(f"Setting up 'fit' stage with dataset type: {self.hparams.dataset_type}")
-            self.train_dataset = TrainValPredDatasetClass(
-                dataset_file=self.hparams.train_csv,
-                dataset_folder=self.hparams.dataset_folder,
-                transform=self.train_transform,
-                size=self.hparams.image_size
-            )
-            # Use the same dataset class type for validation, but with validation transform
-            self.val_dataset = TrainValPredDatasetClass(
-                dataset_file=self.hparams.val_csv,
-                dataset_folder=self.hparams.dataset_folder,
-                transform=self.val_transform,
-                size=self.hparams.image_size
-            )
+
+            if self.hparams.dataset_type is DataLoaderTypesEnum.VisLoc:
+                total_ds = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.train_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    transform=self.train_transform,
+                    size=self.hparams.image_size
+                )
+                print(f"len(total_ds): {len(total_ds)}")
+                self.train_dataset, self.val_dataset = random_split(total_ds, [0.8, 0.2], generator=torch.Generator().manual_seed(42))
+            else:
+                self.train_dataset = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.train_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    transform=self.train_transform,
+                    size=self.hparams.image_size
+                )
+                # Use the same dataset class type for validation, but with validation transform
+                self.val_dataset = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.val_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    transform=self.val_transform,
+                    size=self.hparams.image_size
+                )
             print(f"Train dataset size: {len(self.train_dataset)}")
             print(f"Validation dataset size: {len(self.val_dataset)}")
 

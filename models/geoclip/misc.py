@@ -9,6 +9,8 @@ import numpy.typing as npt
 import pandas as pd
 from PIL import Image as IM
 from tqdm import tqdm
+import rasterio
+from rasterio.transform import rowcol
 
 import torch
 import torchvision.transforms as T
@@ -125,79 +127,27 @@ def zoom_at(img: IM.Image, x: float, y: float, zoom: int):
                     x + w / zoom2, y + h / zoom2))
     return img.resize((w, h), IM.Resampling.LANCZOS)
 
+def geo_to_pixel(lat, lon, transform, width, height):
+    """
+    將地理座標(緯度，經度)轉換為圖像像素座標(row, col)
+    
+    參數:
+    lat - 緯度
+    lon - 經度
+    transform - rasterio 轉換矩陣
+    width, height - 圖像尺寸
+    
+    返回:
+    (col, row) - 像素座標 (x, y)
+    """
 
-def crop_image(sat_img: IM.Image, coordinate_center: Tuple[int, int], crop_size: Tuple[int, int]):
-    w, h = crop_size
-    half_crop = w // 2
-    cx, cy = coordinate_center
-    crop_top = int(cy - half_crop)
-    crop_bottom = int(cy + half_crop)
-    crop_left = int(cx - half_crop)
-    crop_right = int(cx + half_crop)
-    crop_box = (
-        crop_left,
-        crop_top,
-        crop_right,
-        crop_bottom
-    )
-    copy_sat_img = sat_img.copy()
-    cropped_image = copy_sat_img.crop(crop_box)
-    return cropped_image
-
-def get_neighbors(sat_img: IM.Image, curr_img_center: Tuple[int, int], heading_angle: float, radius: float=0.3,  crop_size: Tuple[int, int]=(224, 224)):
-    img_0_x, img_0_y = curr_img_center
-    img_1_x, img_1_y = img_0_x, img_0_y - radius
-    img_2_x, img_2_y = img_1_x + radius, img_1_y
-    img_3_x, img_3_y = img_2_x, img_2_y + radius
-    img_4_x, img_4_y = img_3_x, img_3_y + radius
-    img_5_x, img_5_y = img_4_x - radius, img_4_y
-    img_6_x, img_6_y = img_5_x - radius, img_5_y
-    img_7_x, img_7_y = img_6_x, img_6_y - radius
-    img_8_x, img_8_y = img_7_x, img_7_y - radius
-
-    neighbor_cooridnates: List[Tuple[int, int]] = [
-            (img_1_x, img_1_y),
-            (img_2_x, img_2_y),
-            (img_3_x, img_3_y),
-            (img_4_x, img_4_y),
-            (img_5_x, img_5_y),
-            (img_6_x, img_6_y),
-            (img_7_x, img_7_y),
-            (img_8_x, img_8_y),
-        ]
-    neighbor_imgs: List[IM.Image] = []
-
-    if heading_angle >= -22.5 or heading_angle <= 22.5:
-        neighbor_coord = neighbor_cooridnates[0]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle > 22.5 and heading_angle <= 67.5:
-        neighbor_coord = neighbor_cooridnates[1]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle > 67.5 and heading_angle <= 112.5:
-        neighbor_coord = neighbor_cooridnates[2]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle > 112.5 and heading_angle <= 157.5:
-        neighbor_coord = neighbor_cooridnates[3]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif (heading_angle > 157.5 and heading_angle <= 180) or (heading_angle >= -180 and heading_angle < -157.5):
-        neighbor_coord = neighbor_cooridnates[4]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle >= -157.5 and heading_angle < -112.5:
-        neighbor_coord = neighbor_cooridnates[5]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle >= -112.5 and heading_angle < -67.5:
-        neighbor_coord = neighbor_cooridnates[6]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle >= -67.5 and heading_angle < -22.5:
-        neighbor_coord = neighbor_cooridnates[7]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-
-    return neighbor_coord, neighbor_imgs
+    print(f">\t[DEBUG] lat: {lat}, lon: {lon}")
+    # 使用 rasterio 的 rowcol 函數進行座標轉換 (注意：順序是 x=經度, y=緯度)
+    row, col = rowcol(transform, lon, lat)
+    print(f">\t[DEBUG] row: {row}, col: {col}")
+    
+    # 確保座標在圖像範圍內
+    col = max(0, min(width - 1, col))
+    row = max(0, min(height - 1, row))
+    
+    return col, row
