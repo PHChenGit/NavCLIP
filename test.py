@@ -4,6 +4,9 @@ from typing import Dict, List
 
 import torch
 import numpy as np
+import cv2
+from tqdm import tqdm
+from typing import List, Tuple
 
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
@@ -11,6 +14,32 @@ from pytorch_lightning import Trainer, seed_everything
 from dataloader import GeoCLIPDataModule, DataLoaderTypesEnum
 from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
 from models.geoclip.misc import log_pred_result, calculate_angle_error
+
+def visualize(pred_locations: List[Tuple[int, int]], true_locations:List[Tuple[int, int]], output_folder: Path, sat_img_path: str):
+    assert len(pred_locations) == len(true_locations)
+    COLOR_GREEN = (0, 255, 0) # Ground-Truth
+    COLOR_RED = (0, 0, 255) # Predict 
+    COLOR_BLUE = (255, 0, 0)
+    image_path = Path(sat_img_path).expanduser()
+
+    if not image_path.exists():
+        raise ValueError(f"satellite image not found: {image_path}")
+
+    sat_img = cv2.imread(str(image_path))
+    img = sat_img.copy()
+    rad = 10
+    thickness = 10
+
+    for i, pred_location in tqdm(enumerate(pred_locations), total=len(pred_locations), desc="Visualizing"):
+        center_gt = (int(true_locations[i][0][0]), int(true_locations[i][0][1]))
+        cv2.circle(img, center_gt, rad, COLOR_GREEN, thickness)
+
+        center_pred = (int(pred_locations[i][0][0]), int(pred_locations[i][0][1]))
+        cv2.circle(img, center_pred, rad, COLOR_RED, thickness)
+
+        cv2.line(img, center_gt, center_pred, COLOR_BLUE, thickness=thickness)
+
+    cv2.imwrite(str(output_folder.joinpath("location_matching.jpg")), img)
 
 
 def main(args):
@@ -68,7 +97,9 @@ def main(args):
         "Pred Yaw MAE(degree)": pred_yaw_mae,
         "Pred Yaw RMSE(degree)": pred_yaw_rmse
     }
-    log_pred_result(data, Path(args.output_dir), "test_result_3.json")
+    log_pred_result(data, Path(args.output_dir), "test_result_2.json")
+
+    visualize(pred_coarse_coordinate_list, true_coordinate_list, Path(args.output_dir), args.sat_img)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Inference GeoCLIP")
