@@ -671,7 +671,9 @@ class TestVisLocDataLoader(Dataset):
         query_img = IM.open(query_img_path).convert('RGB')
         query_img_ori = query_img.copy()
 
-        query_img = transforms.Resize(self.img_size)(query_img)
+        query_img = transforms.Resize((self.img_size, self.img_size))(query_img)
+        sat_img_ori = transforms.Resize((self.img_size, self.img_size))(sat_img_ori)
+        query_img_ori = transforms.Resize((self.img_size, self.img_size))(query_img_ori)
 
         if self.transform:
             sat_img = self.transform(sat_img)
@@ -683,7 +685,7 @@ class TestVisLocDataLoader(Dataset):
         coordinate = torch.tensor(coordinate, dtype=torch.float)
         yaw = torch.tensor(yaw)
 
-        return sat_img, query_img, coordinate, yaw, F.to_tensor(sat_img_ori),  F.to_tensor(query_img_ori)
+        return query_img, coordinate, yaw, F.to_tensor(sat_img_ori),  F.to_tensor(query_img_ori)
 
 class DataLoaderTypesEnum(Enum):
     Pose = 'Pose'
