@@ -6,13 +6,14 @@ import cv2
 import torch
 import numpy as np
 from tqdm import tqdm
+import pandas as pd
 
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
 
 from dataloader import GeoCLIPDataModule, DataLoaderTypesEnum
 from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
-from models.geoclip.misc import log_pred_result, calculate_angle_error, calculate_location_error_metrics, gps_to_pixel_and_draw
+from models.geoclip.misc import log_pred_result, calculate_angle_error, calculate_location_error_metrics, gps_to_pixel_and_draw, create_gallery
 
 
 def visualize(pred_locations: List[Tuple[int, int]], true_locations:List[Tuple[int, int]], output_folder: Path, sat_img_path: str):
@@ -48,10 +49,9 @@ def main(args):
     DATASET_ROOT_PATH = args.ds_folder
 
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
-    # PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    PRED_CSV = DATASET_ROOT.joinpath(CSV_FILE)
-    # COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', args.dataset_file)
-    COORDINATE_GALLERY = PRED_CSV
+    PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', "gallery.csv")
+    # COORDINATE_GALLERY = PRED_CSV
     print(f">\tCoordinate gallery path: {COORDINATE_GALLERY}")
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
@@ -62,6 +62,10 @@ def main(args):
         image_size=224
     )
     datamodule.setup('predict')
+
+    test_dataloader = datamodule.predict_dataloader()
+    if not COORDINATE_GALLERY.exists():
+        create_gallery(COORDINATE_GALLERY.parent, test_dataloader)
 
     model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), sat_img=args.sat_img, clip_model_name="openai/clip-vit-large-patch14")
     model.load_weights(args.pretrained_model_dir)
@@ -85,9 +89,21 @@ def main(args):
         pred_yaw_list.append(data["pred_yaw_angle"])
         true_yaw_list.append(data["true_yaw"][0])
 
-    pred_dist_mae_degree, pred_dist_rmse_degree = model._common_val_test_loss(torch.Tensor(np.array(pred_coarse_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
-    pred_dist_mae_degree = round(pred_dist_mae_degree.detach().item(), 2)
-    pred_dist_rmse_degree = round(pred_dist_rmse_degree.detach().item(), 2)
+    # pred_dist_mae_degree, pred_dist_rmse_degree = model._common_val_test_loss(torch.Tensor(np.array(pred_coarse_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
+    # pred_dist_mae_degree = round(pred_dist_mae_degree.detach().item(), 2)
+    # pred_dist_rmse_degree = round(pred_dist_rmse_degree.detach().item(), 2)
+
+    df_pred = pd.DataFrame({
+        'lat': [lat for lat, _ in pred_coarse_coordinate_list],
+        'lon': [lon for _, lon in pred_coarse_coordinate_list]
+    })
+    df_pred.to_csv(Path(args.output_dir).joinpath('pred_coordinates.csv'), index=False)
+
+    df_gt = pd.DataFrame({
+        'lat': [lat for lat, _ in true_coordinate_list],
+        'lon': [lon for _, lon in true_coordinate_list]
+    })
+    df_gt.to_csv(Path(args.output_dir).joinpath('gt_coordinates.csv'), index=False)
 
     pred_dist_dict = calculate_location_error_metrics(pred_coarse_coordinate_list, true_coordinate_list)
 
@@ -96,16 +112,14 @@ def main(args):
     pred_yaw_rmse = round(pred_yaw_rmse, 2)
 
     data = {
-        "Pred GPS Dist MAE(degree)": pred_dist_mae_degree,
-        "Pred GPS Dist RMSE(degree)": pred_dist_rmse_degree,
         "Pred GPS Dist MAE(Meters)": pred_dist_dict['mae_meters'],
         "Pred GPS Dist RMSE(Meters)": pred_dist_dict['rmse_meters'],
         "Pred Yaw MAE(degree)": pred_yaw_mae,
         "Pred Yaw RMSE(degree)": pred_yaw_rmse
     }
     print(data)
-    log_pred_result(data, Path(args.output_dir), "test_result_2.json")
-    gps_to_pixel_and_draw(args.sat_img, pred_coarse_coordinate_list, str(Path(args.output_dir).joinpath("location_matching.jpg")))
+    log_pred_result(data, Path(args.output_dir), "test_result.json")
+    # gps_to_pixel_and_draw(args.sat_img, pred_coarse_coordinate_list, str(Path(args.output_dir).joinpath("location_matching.jpg")))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Inference GeoCLIP")

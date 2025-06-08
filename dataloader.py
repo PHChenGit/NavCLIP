@@ -531,7 +531,7 @@ class VisLocDataLoader(Dataset):
         self.rotate_angles = list(range(-180, 180, 15))
         self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
 
-        self.sat_imgs, self.drone_imgs, self.coordinates = self._load_dataset(dataset_file, required_cols={'SAT_IMG', 'DRONE_IMG', 'LAT', 'LON'})
+        self.sat_imgs, self.drone_imgs, self.coordinates = self._load_dataset(dataset_file)
 
     def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
         try:
@@ -549,8 +549,8 @@ class VisLocDataLoader(Dataset):
 
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
-            ref_img_path = os.path.join(self.dataset_folder, str(row['SAT_IMG']))
-            query_img_path = os.path.join(self.dataset_folder, str(row['DRONE_IMG']))
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
 
             if exists(ref_img_path) and exists(query_img_path):
                 sat_imgs.append(ref_img_path)
@@ -618,15 +618,16 @@ class TestVisLocDataLoader(Dataset):
         self.transform = transform
         self.img_size = size
 
-        self.sat_imgs, self.drone_imgs, self.coordinates, self.yaws = self._load_dataset(dataset_file, required_cols={'SAT_IMG', 'DRONE_IMG', 'LAT', 'LON', 'YAW'})
+        self.sat_imgs, self.drone_imgs, self.coordinates, self.yaws = self._load_dataset(dataset_file)
 
-    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON', 'YAW'}):
         try:
             dataset_info = pd.read_csv(dataset_file)
         except Exception as e:
             raise IOError(f">\tError reading {dataset_file}: {e}")
 
         if not required_cols.issubset(dataset_info.columns):
+            print(dataset_info.columns)
             raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
 
         sat_imgs = []
@@ -636,8 +637,8 @@ class TestVisLocDataLoader(Dataset):
 
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
-            ref_img_path = os.path.join(self.dataset_folder, str(row['SAT_IMG']))
-            query_img_path = os.path.join(self.dataset_folder, str(row['DRONE_IMG']))
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
 
             if exists(ref_img_path) and exists(query_img_path):
                 sat_imgs.append(ref_img_path)

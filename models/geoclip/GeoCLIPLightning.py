@@ -13,6 +13,7 @@ import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
 from PIL import Image as IM
 import time
+from geopy.distance import geodesic
 
 from .image_encoder import ImageEncoder
 from .location_encoder import LocationEncoder
@@ -20,7 +21,8 @@ from .misc import (
     load_gallery_data,
     denormalize_and_restore_image,
     estimate_rotation_angle,
-    EstimateHomoException
+    EstimateHomoException,
+    
 )
 
 class GeoCLIPLightning(pl.LightningModule):
@@ -134,10 +136,22 @@ class GeoCLIPLightning(pl.LightningModule):
         return logits_per_image
 
     def _common_val_test_loss(self, pred_coords, true_coords):
-        dist_mae = F.l1_loss(pred_coords, true_coords)
 
-        dist_mse = F.mse_loss(pred_coords, true_coords)
-        dist_rmse = torch.sqrt(dist_mse)
+        distance_errors_meters = []
+        for true_loc, pred_loc in zip(true_coords, pred_coords):
+            # true_loc 和 pred_loc 應該是 (緯度, 經度) 的元組
+            distance = geodesic(true_loc.detach().cpu().numpy(), pred_loc.detach().cpu().numpy()).meters
+            distance_errors_meters.append(distance)
+
+        errors_np = np.array(distance_errors_meters)
+
+        dist_mae = np.mean(errors_np) # 由於距離恆為正，abs(errors_np) 等於 errors_np
+        dist_rmse = np.sqrt(np.mean(errors_np**2))
+
+        # dist_mae = F.l1_loss(pred_coords, true_coords)
+
+        # dist_mse = F.mse_loss(pred_coords, true_coords)
+        # dist_rmse = torch.sqrt(dist_mse)
 
         return dist_mae, dist_rmse
 
@@ -249,9 +263,9 @@ class GeoCLIPLightning(pl.LightningModule):
                           betas=(0.9, 0.999),
                           eps=1e-08)
 
-        # scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+        scheduler = StepLR(optimizer, step_size=50, gamma=0.5)
         # scheduler = MultiStepLR(optimizer, [30, 60, 80], gamma=self.hparams.scheduler_gamma)
-        scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
+        # scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
 
         return {
             'optimizer': optimizer,
