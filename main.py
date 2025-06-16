@@ -1,4 +1,6 @@
 import argparse
+import sys
+import os
 from pathlib import Path
 
 import torch
@@ -12,18 +14,23 @@ from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
 from models.geoclip.misc import create_gallery
 from mymodelckpt import MyModelCheckpoint
 
+project_root = os.path.abspath(os.path.dirname(__file__))
+sys.path.insert(0, project_root)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train NavCLIP")
     parser.add_argument("--name", type=str, default="NavCLIP", help="experiment name")
     parser.add_argument("--bs", type=int, default=512, help="batch size")
     parser.add_argument("--epochs", type=int, default=500, help="training epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
+    parser.add_argument("--wd", type=float, default=0.09, help="weight_decay")
     parser.add_argument("--queue_size", type=int, default=4096)
     parser.add_argument("--ckpt_folder", type=str, default='output', help="checkpoint folder")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--ds_folder", type=str, default=r"~/Documents/hsun/datasets/NTU_playground_Cross_Season_100k", help="dataset folder path")
     parser.add_argument("--dataset_file", type=str, default=r"taipei.csv", help="dataset csv file")
     parser.add_argument("--scheduler_gamma", type=float, default=0.5)
+    parser.add_argument("--sat_img", type=str)
     args = parser.parse_args()
 
     ACCELERATOR = 'gpu' if torch.cuda.is_available() else 'cpu'
@@ -34,28 +41,24 @@ if __name__ == '__main__':
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
     TRAIN_CSV = DATASET_ROOT.joinpath('train', CSV_FILE)
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
-    VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
-    COORDINATE_GALLERY = TRAIN_CSV
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
 
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
         train_csv=str(TRAIN_CSV),
+        val_csv=str(VAL_CSV),
         dataset_type=DataLoaderTypesEnum.VisLoc,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224,
-        is_cross_season=True,
+        sat_img_path=args.sat_img,
     )
 
     datamodule.setup('fit')
     train_dataloader = datamodule.train_dataloader()
     val_dataloader = datamodule.val_dataloader()
     if not COORDINATE_GALLERY.exists():
-        create_gallery(COORDINATE_GALLERY.parent, train_dataloader)
-
-    # if not VAL_COORDINATE_GALLERY.exists():
-    #     create_gallery(VAL_COORDINATE_GALLERY.parent, val_dataloader)
+        create_gallery(COORDINATE_GALLERY.parent, val_dataloader)
 
     checkpoint_callback = MyModelCheckpoint(
         dirpath=f"{args.ckpt_folder}",
@@ -67,11 +70,19 @@ if __name__ == '__main__':
     )
     early_stop_callback = EarlyStopping(
         monitor='val_dist_MAE',
-        patience=15, # 連續 n 個 Epoch 沒有改善就停止
+        patience=20, # 連續 n 個 Epoch 沒有改善就停止
         verbose=True,
         mode='min'
     )
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), learning_rate=args.lr, scheduler_gamma=args.scheduler_gamma)
+    model = GeoCLIPLightning(
+        gallery_path=str(COORDINATE_GALLERY),
+        clip_model_name="facebook/metaclip-l14-400m",
+        sat_img=args.sat_img,
+        learning_rate=args.lr,
+        scheduler_gamma=args.scheduler_gamma,
+        weight_decay=args.wd,
+        epochs=args.epochs
+        )
 
     tensorboard_logger = pl.loggers.TensorBoardLogger(save_dir="logs", name=args.name)
 

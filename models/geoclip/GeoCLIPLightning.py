@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import StepLR, MultiStepLR
+from torch.optim.lr_scheduler import StepLR, MultiStepLR, CosineAnnealingLR
 import torchvision.transforms as T
 
 import pytorch_lightning as pl
@@ -16,14 +16,16 @@ import time
 from geopy.distance import geodesic
 
 from .image_encoder import ImageEncoder
-from .location_encoder import LocationEncoder
+from .location_encoder import LocationEncoder, get_positional_encoding, get_neural_network
 from .misc import (
     load_gallery_data,
     denormalize_and_restore_image,
     estimate_rotation_angle,
     EstimateHomoException,
-    
 )
+from .loss import NavCLIPLoss
+
+from models.geoclip.satellite_img_processor import SatelliteImageProcessor
 
 class GeoCLIPLightning(pl.LightningModule):
     def __init__(self,
@@ -34,6 +36,7 @@ class GeoCLIPLightning(pl.LightningModule):
                  learning_rate: float = 1e-4,
                  weight_decay: float = 0.01,
                  scheduler_gamma: float = 0.5,
+                 epochs: int=150,
                  ):
         super().__init__()
         self.save_hyperparameters()
@@ -42,6 +45,8 @@ class GeoCLIPLightning(pl.LightningModule):
         self.CLIP = CLIPModel.from_pretrained(clip_model_name)
         # self.image_processor = AutoProcessor.from_pretrained(clip_model_name)
         self.image_encoder = ImageEncoder()
+        # self.posenc = get_positional_encoding(name='sphericalharmonics', harmonics_calculation='analytic', legendre_polys=16, min_radius=1, max_radius=260, frequency_num=16)
+        # self.nnet = get_neural_network(name='siren', input_dim=self.posenc.embedding_dim, num_classes=512, dim_hidden=256, num_layers=2)
         self.location_encoder = LocationEncoder()
 
         self.gps_gallery: torch.Tensor = load_gallery_data(gallery_path)
@@ -50,7 +55,8 @@ class GeoCLIPLightning(pl.LightningModule):
         for param in self.CLIP.parameters():
             param.requires_grad = False
 
-        self.criterion = nn.CrossEntropyLoss()
+        # self.criterion = nn.CrossEntropyLoss()
+        self.loss_fn = NavCLIPLoss()
         """
         For saving prediction result and ground-truth in prediction step
         """
@@ -64,9 +70,8 @@ class GeoCLIPLightning(pl.LightningModule):
         """
         self.mapglue = torch.jit.load(Path('~/Documents/hsun/NavCLIP/models/MapGlue/weights/fastmapglue_model.pt').expanduser())
         self.mapglue.eval()
-        # if sat_img:
-        #     self.sat_img = IM.open(sat_img).convert('RGB')
-            # self.sat_img = sat_img
+
+        self.sat_img_processor = SatelliteImageProcessor(sat_img)
 
     def load_weights(self, pretrained_dir):
         """Loads weights to the correct device"""
@@ -129,18 +134,33 @@ class GeoCLIPLightning(pl.LightningModule):
         image_features = self.encode_image(image)     # [N, 512]
         location_features = self.encode_location(location) # [M, 512]
 
+        if torch.any(torch.isnan(location_features)):
+            print(location_features)
+            raise Exception("location features has nan")
+        # print(f"image_features: {image_features.shape}, location_features shape: {location_features.shape}")
+
         logit_scale = self.logit_scale.exp()
         # logits_per_image: [N, M]
         logits_per_image = logit_scale * (image_features @ location_features.t())
+        # print(f"logits_per_image {logits_per_image.shape}")
+        logits_per_location = logits_per_image.t()
 
-        return logits_per_image
+        return logits_per_image, logits_per_location
 
     def _common_val_test_loss(self, pred_coords, true_coords):
+        # pred_locations = []
+        # for loc in pred_coords:
+        #     lat, lon = self.sat_img_processor.pixel_to_gps(loc[0].detach().cpu().numpy(),loc[1].detach().cpu().numpy())
+        #     pred_locations.append([lat, lon])
+
+        # true_locations = []
+        # for loc in true_coords:
+        #     lat, lon = self.sat_img_processor.pixel_to_gps(loc[0].detach().cpu().numpy(), loc[1].detach().cpu().numpy())
+        #     true_locations.append([lat, lon])
 
         distance_errors_meters = []
         for true_loc, pred_loc in zip(true_coords, pred_coords):
-            # true_loc 和 pred_loc 應該是 (緯度, 經度) 的元組
-            distance = geodesic(true_loc.detach().cpu().numpy(), pred_loc.detach().cpu().numpy()).meters
+            distance = geodesic(true_loc, pred_loc).meters
             distance_errors_meters.append(distance)
 
         errors_np = np.array(distance_errors_meters)
@@ -148,48 +168,34 @@ class GeoCLIPLightning(pl.LightningModule):
         dist_mae = np.mean(errors_np) # 由於距離恆為正，abs(errors_np) 等於 errors_np
         dist_rmse = np.sqrt(np.mean(errors_np**2))
 
-        # dist_mae = F.l1_loss(pred_coords, true_coords)
-
-        # dist_mse = F.mse_loss(pred_coords, true_coords)
-        # dist_rmse = torch.sqrt(dist_mse)
-
         return dist_mae, dist_rmse
 
     def training_step(self, batch, batch_idx):
-        def _train(imgs, gps_all, targets_img_gps):
-            with torch.autocast(device_type='cuda'):
-                logits_img_gps = self(imgs, gps_all)
-            loss = self.criterion(logits_img_gps, targets_img_gps)
-
-            return loss
-
-        ref_imgs, query_imgs, coordinates, yaws = batch
-        batch_size = ref_imgs.shape[0]
+        query_imgs, coordinates, yaws = batch
 
         gps_queue = self.get_gps_queue()
         gps_all = torch.cat([coordinates, gps_queue], dim=0)
         self.dequeue_and_enqueue(coordinates)
 
-        # 創建標籤 (對角線為 1，代表匹配的 image-location 對)
-        labels = torch.arange(batch_size, dtype=torch.long, device=self.device)
+        with torch.autocast(device_type='cuda'):
+            logits_per_image, logits_per_coord = self(query_imgs, gps_all)
 
-        ref_loss = _train(ref_imgs, gps_all, labels)
-        query_loss = _train(query_imgs, gps_all, labels)
-        loss = ref_loss + query_loss
+        loss, image_loss, location_loss = self.loss_fn(logits_per_image, logits_per_coord)
 
-        # 記錄損失
         self.log('loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('image loss', image_loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        self.log('location loss', location_loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        ref_imgs, query_imgs, coordinates, yaws = batch
+        query_imgs, coordinates, yaws = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
 
         with torch.autocast(device_type='cuda'):
-            logits_per_image = self(query_imgs, self.gps_gallery)
+            logits_per_image, logits_per_coord = self(query_imgs, self.gps_gallery)
 
         probs = logits_per_image.softmax(dim=-1)
         out = torch.argmax(probs, dim=-1)
@@ -203,23 +209,25 @@ class GeoCLIPLightning(pl.LightningModule):
         return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        """
+        coordinates: 是pixel
+        """
         query_imgs, coordinates, yaws, sat_img_PIL, query_img_PIL, = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
 
         with torch.autocast(device_type='cuda'):
-            logits_per_image = self(query_imgs, self.gps_gallery) # [B, num_gallery_gps]
+            logits_per_image, logits_per_coord = self(query_imgs, self.gps_gallery) # [B, num_gallery_gps]
 
         probs_per_image = logits_per_image.softmax(dim=-1).cpu() # [B, num_gallery_gps]
 
         top_k = 1
         top_pred = torch.topk(probs_per_image, top_k, dim=1)
-        pred_coordinate = self.gps_gallery[top_pred.indices[0]]
+        pred_coordinate = self.gps_gallery[top_pred.indices[0]] # 正規化後的pixel座標
 
-        img_h, img_w = query_imgs.shape[2], query_imgs.shape[3] # B, C, H, W = [1, 3, 224, 224])
-        best_pred_coordinates = pred_coordinate[0].cpu().numpy()
-
+        # img_h, img_w = query_imgs.shape[2], query_imgs.shape[3] # B, C, H, W = [1, 3, 224, 224])
+        best_pred_coordinates = pred_coordinate[0].detach().cpu().numpy()
         restored_query_imgs: IM.Image = T.ToPILImage()(query_img_PIL[0])
         restored_sat_imgs = T.ToPILImage()(sat_img_PIL[0])
 
@@ -238,23 +246,24 @@ class GeoCLIPLightning(pl.LightningModule):
 
         if best_H_pred is None:
             return {
-                "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-                "true_coordinate": coordinates.cpu().numpy(),
+                "pred_coarse_coordinate": best_pred_coordinates,
+                "true_coordinate": coordinates[0].detach().cpu().numpy(),
                 "pred_yaw_angle": np.nan,
                 "true_yaw": yaws.cpu().numpy()
             }
 
         return {
-            "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-            "true_coordinate": coordinates.cpu().numpy(),
+            "pred_coarse_coordinate": best_pred_coordinates,
+            "true_coordinate": coordinates[0].detach().cpu().numpy(),
             "pred_yaw_angle": best_yaw_pred,
             "true_yaw": yaws.cpu().numpy()
         }
 
     def configure_optimizers(self):
         params_to_optimize = [
-            {'params': self.image_encoder.parameters(), "lr": 3e-4},
-            {'params': self.location_encoder.parameters(), "lr": 3e-4},
+            {'params': self.image_encoder.parameters(), "lr": self.hparams.learning_rate},
+            {'params': self.location_encoder.parameters(), "lr": self.hparams.learning_rate},
+            {'params': [self.logit_scale], "lr": self.hparams.learning_rate},
         ]
 
         optimizer = AdamW(params_to_optimize,
@@ -263,9 +272,7 @@ class GeoCLIPLightning(pl.LightningModule):
                           betas=(0.9, 0.999),
                           eps=1e-08)
 
-        scheduler = StepLR(optimizer, step_size=50, gamma=0.5)
-        # scheduler = MultiStepLR(optimizer, [30, 60, 80], gamma=self.hparams.scheduler_gamma)
-        # scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
+        scheduler = StepLR(optimizer, step_size=20, gamma=0.5)
 
         return {
             'optimizer': optimizer,

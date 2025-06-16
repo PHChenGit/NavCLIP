@@ -14,6 +14,7 @@ from pytorch_lightning import Trainer, seed_everything
 from dataloader import GeoCLIPDataModule, DataLoaderTypesEnum
 from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
 from models.geoclip.misc import log_pred_result, calculate_angle_error, calculate_location_error_metrics, gps_to_pixel_and_draw, create_gallery
+from models.geoclip.satellite_img_processor import SatelliteImageProcessor
 
 
 def visualize(pred_locations: List[Tuple[int, int]], true_locations:List[Tuple[int, int]], output_folder: Path, sat_img_path: str):
@@ -49,9 +50,8 @@ def main(args):
     DATASET_ROOT_PATH = args.ds_folder
 
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
-    PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', "gallery.csv")
-    # COORDINATE_GALLERY = PRED_CSV
+    PRED_CSV = DATASET_ROOT.joinpath('test/router_1', CSV_FILE)
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test/router_1', "gallery.csv")
     print(f">\tCoordinate gallery path: {COORDINATE_GALLERY}")
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
@@ -59,7 +59,8 @@ def main(args):
         dataset_type=DataLoaderTypesEnum.TestVisLoc,
         batch_size=args.bs,
         num_workers=args.num_workers,
-        image_size=224
+        image_size=224,
+        sat_img_path=args.sat_img
     )
     datamodule.setup('predict')
 
@@ -67,7 +68,7 @@ def main(args):
     if not COORDINATE_GALLERY.exists():
         create_gallery(COORDINATE_GALLERY.parent, test_dataloader)
 
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), sat_img=args.sat_img, clip_model_name="openai/clip-vit-large-patch14")
+    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), sat_img=args.sat_img, clip_model_name="facebook/metaclip-l14-400m")
     model.load_weights(args.pretrained_model_dir)
     trainer = Trainer(
         default_root_dir='output',
@@ -84,26 +85,14 @@ def main(args):
         if np.isnan(data["pred_yaw_angle"]):
             continue
 
-        pred_coarse_coordinate_list.append(data["pred_coarse_coordinate"][0])
-        true_coordinate_list.append(data["true_coordinate"][0])
+        pred_coarse_coordinate_list.append(data["pred_coarse_coordinate"])
+        true_coordinate_list.append(data["true_coordinate"])
         pred_yaw_list.append(data["pred_yaw_angle"])
         true_yaw_list.append(data["true_yaw"][0])
 
     # pred_dist_mae_degree, pred_dist_rmse_degree = model._common_val_test_loss(torch.Tensor(np.array(pred_coarse_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
     # pred_dist_mae_degree = round(pred_dist_mae_degree.detach().item(), 2)
     # pred_dist_rmse_degree = round(pred_dist_rmse_degree.detach().item(), 2)
-
-    df_pred = pd.DataFrame({
-        'lat': [lat for lat, _ in pred_coarse_coordinate_list],
-        'lon': [lon for _, lon in pred_coarse_coordinate_list]
-    })
-    df_pred.to_csv(Path(args.output_dir).joinpath('pred_coordinates.csv'), index=False)
-
-    df_gt = pd.DataFrame({
-        'lat': [lat for lat, _ in true_coordinate_list],
-        'lon': [lon for _, lon in true_coordinate_list]
-    })
-    df_gt.to_csv(Path(args.output_dir).joinpath('gt_coordinates.csv'), index=False)
 
     pred_dist_dict = calculate_location_error_metrics(pred_coarse_coordinate_list, true_coordinate_list)
 
