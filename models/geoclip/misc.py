@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import cv2
 import numpy as np
@@ -9,6 +9,7 @@ import numpy.typing as npt
 import pandas as pd
 from PIL import Image as IM
 from tqdm import tqdm
+from geopy.distance import geodesic
 
 import torch
 import torchvision.transforms as T
@@ -41,8 +42,8 @@ def create_gallery(gallery_folder, data_loader):
             total=len(data_loader),
             desc="Creating pose gallery",
         )
-        for i, (_, _, ref_coordinates, _, _) in bar:
-            for coord in ref_coordinates:
+        for i, (_, _, gps_coordinate, pixel_coordinate, _) in bar:
+            for coord in pixel_coordinate:
                 lat, lon = coord.detach().cpu().numpy()
                 all_pose.append([lat, lon])
         df = pd.DataFrame(all_pose, columns=["LAT", "LON"])
@@ -98,7 +99,13 @@ def estimate_rotation_angle(model, ref_img: npt.NDArray, query_img: npt.NDArray)
     m_kpts0_valid = points0[inlier_mask]
     m_kpts1_valid = points1[inlier_mask]
 
-    yaw_rad = np.arctan2(H_pred[1, 0], H_pred[0, 0])
+    A = H_pred[0:2, 0:2]
+    a = A[0, 0]
+    b = A[0, 1]
+    c = A[1, 0]
+    d = A[1, 1]
+    yaw_rad = np.arctan2(c, d) if np.isclose(a, d) and np.isclose(-b, c) else np.arctan2(-b, a)
+    # yaw_rad = np.arctan2(H_pred[1, 0], H_pred[0, 0])
     yaw_angle = np.rad2deg(yaw_rad)
 
     return H_pred, yaw_angle, inlier_mask
@@ -144,60 +151,36 @@ def crop_image(sat_img: IM.Image, coordinate_center: Tuple[int, int], crop_size:
     cropped_image = copy_sat_img.crop(crop_box)
     return cropped_image
 
-def get_neighbors(sat_img: IM.Image, curr_img_center: Tuple[int, int], heading_angle: float, radius: float=0.3,  crop_size: Tuple[int, int]=(224, 224)):
-    img_0_x, img_0_y = curr_img_center
-    img_1_x, img_1_y = img_0_x, img_0_y - radius
-    img_2_x, img_2_y = img_1_x + radius, img_1_y
-    img_3_x, img_3_y = img_2_x, img_2_y + radius
-    img_4_x, img_4_y = img_3_x, img_3_y + radius
-    img_5_x, img_5_y = img_4_x - radius, img_4_y
-    img_6_x, img_6_y = img_5_x - radius, img_5_y
-    img_7_x, img_7_y = img_6_x, img_6_y - radius
-    img_8_x, img_8_y = img_7_x, img_7_y - radius
+def calculate_location_error_metrics(true_locations: List[Tuple[float, float]], predicted_locations: List[Tuple[float, float]]) -> Optional[Tuple[int, int]]:
+    """
+    計算一組真實位置和預測位置之間的 MAE 和 RMSE。
 
-    neighbor_cooridnates: List[Tuple[int, int]] = [
-            (img_1_x, img_1_y),
-            (img_2_x, img_2_y),
-            (img_3_x, img_3_y),
-            (img_4_x, img_4_y),
-            (img_5_x, img_5_y),
-            (img_6_x, img_6_y),
-            (img_7_x, img_7_y),
-            (img_8_x, img_8_y),
-        ]
-    neighbor_imgs: List[IM.Image] = []
+    參數:
+    true_locations (list of tuples): 真實的 (緯度, 經度) 座標列表。
+                                     例如: [(lat1_true, lon1_true), (lat2_true, lon2_true), ...]
+    predicted_locations (list of tuples): 預測的 (緯度, 經度) 座標列表。
+                                         例如: [(lat1_pred, lon1_pred), (lat2_pred, lon2_pred), ...]
 
-    if heading_angle >= -22.5 or heading_angle <= 22.5:
-        neighbor_coord = neighbor_cooridnates[0]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle > 22.5 and heading_angle <= 67.5:
-        neighbor_coord = neighbor_cooridnates[1]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle > 67.5 and heading_angle <= 112.5:
-        neighbor_coord = neighbor_cooridnates[2]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle > 112.5 and heading_angle <= 157.5:
-        neighbor_coord = neighbor_cooridnates[3]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif (heading_angle > 157.5 and heading_angle <= 180) or (heading_angle >= -180 and heading_angle < -157.5):
-        neighbor_coord = neighbor_cooridnates[4]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle >= -157.5 and heading_angle < -112.5:
-        neighbor_coord = neighbor_cooridnates[5]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle >= -112.5 and heading_angle < -67.5:
-        neighbor_coord = neighbor_cooridnates[6]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
-    elif heading_angle >= -67.5 and heading_angle < -22.5:
-        neighbor_coord = neighbor_cooridnates[7]
-        img = crop_image(sat_img, neighbor_coord, crop_size)
-        neighbor_imgs.append(img)
+    返回:
+    dict: 包含 MAE 和 RMSE 的字典 (單位: 公尺)。
+          返回 None 如果輸入列表長度不匹配或為空。
+    """
+    if not true_locations or not predicted_locations or len(true_locations) != len(predicted_locations):
+        print("錯誤: 輸入列表為空或長度不匹配。")
+        return None, None
 
-    return neighbor_coord, neighbor_imgs
+    distance_errors_meters = []
+    for true_loc, pred_loc in zip(true_locations, predicted_locations):
+        # true_loc 和 pred_loc 應該是 (緯度, 經度) 的元組
+        distance = geodesic(true_loc, pred_loc).meters
+        distance_errors_meters.append(distance)
+
+    errors_np = np.array(distance_errors_meters)
+
+    mae = np.mean(errors_np) # 由於距離恆為正，abs(errors_np) 等於 errors_np
+    rmse = np.sqrt(np.mean(errors_np**2))
+
+    return {
+        "mae_meters": mae,
+        "rmse_meters": rmse
+    }
