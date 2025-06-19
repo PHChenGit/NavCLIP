@@ -500,12 +500,12 @@ class DJIPoseDataLoader(Dataset):
 
         self.ref_imgs, self.query_imgs, self.coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
 
-        DJI_datasets = ["/home/rvl1421/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_1_gps_to_pixel/test/dataset.csv",
-            "/home/rvl1421/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_2_gps_to_pixel/test/dataset.csv",
-            "/home/rvl1421/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_3_gps_to_pixel/test/dataset.csv"]
+        DJI_datasets = ["~/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_1_gps_to_pixel/test/dataset.csv",
+            "~/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_2_gps_to_pixel/test/dataset.csv",
+            "~/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_3_gps_to_pixel/test/dataset.csv"]
         
         for route_ds in DJI_datasets:
-            ref_imgs, query_imgs, dji_coordinates, px_coord, dji_yaws = self._load_DJI_dataset(Path(route_ds).parent.parent, route_ds)
+            ref_imgs, query_imgs, dji_coordinates, px_coord, dji_yaws = self._load_DJI_dataset(Path(route_ds).expanduser().parent.parent, route_ds)
             self.ref_imgs = np.concatenate([self.ref_imgs, ref_imgs])
             self.query_imgs = np.concatenate([self.query_imgs, query_imgs])
             self.coordinates = np.concatenate([np.array(self.coordinates), np.array(dji_coordinates)])
