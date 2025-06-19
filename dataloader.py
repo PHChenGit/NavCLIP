@@ -1,5 +1,6 @@
 import os
 from os.path import exists
+from pathlib import Path
 import random
 from enum import Enum
 
@@ -18,7 +19,8 @@ import pytorch_lightning as pl
 
 def img_train_transform(size=224):
     return transforms.Compose([
-        # transforms.Resize(size),
+        transforms.CenterCrop((size, size)),
+        transforms.Resize((size, size)), # Ensure consistent input size
         transforms.RandomApply([transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8),
         transforms.RandomGrayscale(p=0.2),
         transforms.PILToTensor(),
@@ -29,7 +31,8 @@ def img_train_transform(size=224):
 
 def img_val_transform(size=224):
     return transforms.Compose([
-        # transforms.Resize(size),
+        transforms.CenterCrop((size, size)),
+        transforms.Resize((size, size)), # Ensure consistent input size
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -39,7 +42,8 @@ def img_val_transform(size=224):
 def img_test_transform(size=224):
      # Usually test/predict also need normalization if the model expects it
     return transforms.Compose([
-        # transforms.Resize(size), # Ensure consistent input size
+        transforms.CenterCrop((size, size)),
+        transforms.Resize((size, size)), # Ensure consistent input size
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -481,37 +485,217 @@ class PoseDataLoader_Warping_SIFT(PoseDataLoader_Warping):
         # Return transformed RGB ref/query, UNTRANSFORMED grayscale numpy ref/query, coords, angles
         return ref_img_transformed, query_img_transformed, ref_img_rot_np, query_img_rot_np, coordinate, roll, yaw, pitch
 
-class TestPoseDataLoader(BaseDataLoader):
+
+class DJIPoseDataLoader(Dataset):
     """
     Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
     """
     def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
-        super().__init__(dataset_file, dataset_folder, transform, size, is_testing=True)
+        self.dataset_folder = dataset_folder
+        self.transform = transform
+        self.img_size = size
+
+        self.rotate_angles = list(range(-180, 180, 15))
+        self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
+
+        self.ref_imgs, self.query_imgs, self.coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
+
+        DJI_datasets = ["/home/rvl1421/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_1_gps_to_pixel/test/dataset.csv",
+            "/home/rvl1421/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_2_gps_to_pixel/test/dataset.csv",
+            "/home/rvl1421/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_3_gps_to_pixel/test/dataset.csv"]
+        
+        for route_ds in DJI_datasets:
+            ref_imgs, query_imgs, dji_coordinates, px_coord, dji_yaws = self._load_DJI_dataset(Path(route_ds).parent.parent, route_ds)
+            self.ref_imgs = np.concatenate([self.ref_imgs, ref_imgs])
+            self.query_imgs = np.concatenate([self.query_imgs, query_imgs])
+            self.coordinates = np.concatenate([np.array(self.coordinates), np.array(dji_coordinates)])
+            self.pixel_coordinates = np.concatenate([np.array(self.pixel_coordinates), np.array(px_coord)])
+            self.yaws = np.concatenate([self.yaws, dji_yaws])
+
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        ref_imgs = []
+        query_imgs = []
+        gps_coordinates = []
+        pixel_coordinates = []
+        yaws = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+
+            if not exists(ref_img_path):
+                raise FileNotFoundError(ref_img_path)
+            
+            if not exists(query_img_path):
+                raise FileNotFoundError(query_img_path)
+
+            ref_imgs.append(ref_img_path)
+            query_imgs.append(query_img_path)
+            latitude = float(row['LAT'])
+            longitude = float(row['LON'])
+            gps_coordinates.append((latitude, longitude))
+
+            x = float(row['PIXEL_X'])
+            y = float(row['PIXEL_Y'])
+            pixel_coordinates.append((x, y))
+
+            yaws.append(np.nan)
+        
+        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates), np.array(pixel_coordinates), np.array(yaws)
+    
+    def _load_DJI_dataset(self, ds_folder,  dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON', 'YAW'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        ref_imgs = []
+        query_imgs = []
+        gps_coordinates = []
+        pixel_coordinates = []
+        yaws = []
+        random_sample_df = dataset_info.sample(n=30, random_state=42)
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(random_sample_df.iterrows(), total=len(random_sample_df), desc="Checking image paths"):
+            ref_img_path = os.path.join(ds_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(ds_folder, str(row['QUERY_IMG']))
+
+            if not exists(ref_img_path):
+                raise FileNotFoundError(ref_img_path)
+            
+            if not exists(query_img_path):
+                raise FileNotFoundError(query_img_path)
+
+            ref_imgs.append(ref_img_path)
+            query_imgs.append(query_img_path)
+            latitude = float(row['LAT'])
+            longitude = float(row['LON'])
+            gps_coordinates.append((latitude, longitude))
+
+            x = float(row['PIXEL_X'])
+            y = float(row['PIXEL_Y'])
+            pixel_coordinates.append((x, y))
+            
+            yaws.append(float(row['YAW']))
+
+        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates), np.array(pixel_coordinates), np.array(yaws)
+    
+    def __len__(self):
+        return len(self.ref_imgs)
+    
+    def __getitem__(self, idx):
+        ref_img_path = self.ref_imgs[idx]
+        query_img_path = self.query_imgs[idx]
+        gps_coordinate = self.coordinates[idx]
+        pixel_coordinate = self.pixel_coordinates[idx]
+        yaw = self.yaws[idx]
+
+        ref_img = IM.open(ref_img_path).convert('RGB')
+        query_img = IM.open(query_img_path).convert('RGB')
+
+        if np.isnan(yaw):
+            rotate_angle, query_img = self.rotation_transform(query_img.copy())
+            yaw = rotate_angle
+
+        if self.transform:
+            ref_img = self.transform(ref_img)
+            query_img = self.transform(query_img)
+        else:
+            ref_img = self.transform(ref_img)
+            query_img = F.to_tensor(query_img)
+
+        gps_coordinate = torch.tensor(gps_coordinate, dtype=torch.float32)
+        pixel_coordinate = torch.tensor(pixel_coordinate, dtype=torch.float32)
+        yaw = torch.tensor(yaw, dtype=torch.float32)
+
+        return ref_img, query_img, gps_coordinate, pixel_coordinate, yaw
+
+
+class TestPoseDataLoader(Dataset):
+    """
+    Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
+    """
+    def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
+        self.dataset_folder = dataset_folder
+        self.transform = transform
+        self.ref_transfrom = img_test_transform(384)
+        self.img_size = size
+
+        self.ref_imgs, self.query_imgs, self.gps_coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
+
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        ref_imgs = []
+        query_imgs = []
+        gps_coordinates = []
+        pixel_coordinates = []
+        yaws = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+            if exists(ref_img_path) and exists(query_img_path):
+                ref_imgs.append(ref_img_path)
+                query_imgs.append(query_img_path)
+                latitude = float(row['LAT'])
+                longitude = float(row['LON'])
+                gps_coordinates.append((latitude, longitude))
+
+                x = float(row['PIXEL_X'])
+                y = float(row['PIXEL_Y'])
+                pixel_coordinates.append((x, y))
+
+                yaw = float(row['YAW'])
+                yaws.append(yaw)
+
+        return ref_imgs, query_imgs, gps_coordinates, pixel_coordinates, yaws
+    
+    def __len__(self):
+        return len(self.ref_imgs)
 
     def __getitem__(self, idx):
-        query_img_path = self.ref_imgs[idx]
-        coordinate = self.coordinates[idx]
+        ref_img_path = self.ref_imgs[idx]
+        query_img_path = self.query_imgs[idx]
+        gps_coordinate = self.gps_coordinates[idx]
+        pixel_coordinate = self.pixel_coordinates[idx]
+        yaw = self.yaws[idx]
 
+        ref_img = IM.open(ref_img_path).convert('RGB')
         query_img = IM.open(query_img_path).convert('RGB')
-        rotate_angle, query_img = self.rotation_transform(query_img.copy())
-
-        cx, cy = query_img.size
-        left = (cx - self.img_size) // 2
-        top = (cy - self.img_size) // 2
-        right = left + self.img_size
-        bottom = top + self.img_size
-
-        query_img = query_img.crop((left, top, right, bottom))
+        # rotate_angle, query_img = self.rotation_transform(query_img.copy())
 
         if self.transform:
             query_img = self.transform(query_img)
+            ref_img = self.ref_transfrom(ref_img)
         else:
             query_img = F.to_tensor(query_img)
 
-        coordinate = torch.tensor(coordinate, dtype=torch.float)
-        yaw = torch.tensor(rotate_angle)
+        gps_coordinate = torch.tensor(gps_coordinate, dtype=torch.float)
+        pixel_coordinate = torch.tensor(pixel_coordinate, dtype=torch.float)
+        yaw = torch.tensor(yaw)
 
-        return query_img, coordinate, yaw
+        return ref_img, query_img, gps_coordinate, pixel_coordinate, yaw
 
 class DataLoaderTypesEnum(Enum):
     Pose = 'Pose'
@@ -520,6 +704,7 @@ class DataLoaderTypesEnum(Enum):
     WarpingLightGlue = 'WarpingLightGlue'
     WarpingSIFT = 'WarpingSIFT'
     TestPose = 'TestPose'
+    DJIPose = 'DJIPose'
 
 class GeoCLIPDataModule(pl.LightningDataModule):
     def __init__(self,
@@ -571,6 +756,8 @@ class GeoCLIPDataModule(pl.LightningDataModule):
 
         if self.hparams.dataset_type is DataLoaderTypesEnum.Pose:
             TrainValPredDatasetClass = PoseDataLoader
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.DJIPose:
+            TrainValPredDatasetClass = DJIPoseDataLoader
         elif self.hparams.dataset_type is DataLoaderTypesEnum.CrossSeasonPose:
             TrainValPredDatasetClass = CrossSeasonPoseDataLoader
         elif self.hparams.dataset_type is DataLoaderTypesEnum.WarpingOmniGlue:

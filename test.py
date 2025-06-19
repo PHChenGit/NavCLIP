@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import torch
 import numpy as np
+import pandas as pd
 import cv2
 from tqdm import tqdm
 from typing import List, Tuple
@@ -13,7 +14,10 @@ from pytorch_lightning import Trainer, seed_everything
 
 from dataloader import GeoCLIPDataModule, DataLoaderTypesEnum
 from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
-from models.geoclip.misc import log_pred_result, calculate_angle_error
+from models.geoclip.misc import log_pred_result, calculate_angle_error, create_gallery, calculate_location_error_metrics
+
+from models.geoclip.satellite_processor import SatelliteImageProcessor
+from pyproj import  CRS
 
 def visualize(pred_locations: List[Tuple[int, int]], true_locations:List[Tuple[int, int]], output_folder: Path, sat_img_path: str):
     assert len(pred_locations) == len(true_locations)
@@ -50,7 +54,7 @@ def main(args):
 
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', args.dataset_file)
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test', 'gallery.csv')
     print(f">\tCoordinate gallery path: {COORDINATE_GALLERY}")
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
@@ -62,6 +66,10 @@ def main(args):
     )
     datamodule.setup('predict')
 
+    pred_dataloader = datamodule.predict_dataloader()
+    if not COORDINATE_GALLERY.exists():
+        create_gallery(COORDINATE_GALLERY.parent, pred_dataloader)
+
     model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), sat_img=args.sat_img, clip_model_name="openai/clip-vit-large-patch14")
     model.load_weights(args.pretrained_model_dir)
     trainer = Trainer(
@@ -70,36 +78,61 @@ def main(args):
     )
     pred_result: List[Dict] = trainer.predict(model, datamodule=datamodule)
 
-    # print(pred_result)
+    sat_processor = SatelliteImageProcessor(args.sat_img)
+
     pred_coarse_coordinate_list = []
     true_coordinate_list = []
     pred_yaw_list = []
     true_yaw_list = []
     for data in pred_result:
-        if data["pred_yaw_angle"] == np.nan:
+        if np.any(np.isnan(data["pred_yaw_angle"])):
             continue
-        pred_coarse_coordinate_list.append(data["pred_coarse_coordinate"])
+
+        # print(data["pred_coarse_coordinate"])
+        pred_gps_coord = sat_processor.pixel_to_gps(data["pred_coarse_coordinate"][0], data["pred_coarse_coordinate"][1])
+        # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, EPGS 3857: {pred_gps_coord}")
+        pred_gps_coord = sat_processor.convert_crs(CRS("EPSG:3857"), CRS("EPSG:4326"), pred_gps_coord[0], pred_gps_coord[1])
+        # print(f"EPSG 4326: {pred_gps_coord}")
+        # break
+        # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, gps coordinates: {pred_gps_coord}")
+        # break
+
+        pred_coarse_coordinate_list.append(pred_gps_coord)
         true_coordinate_list.append(data["true_coordinate"])
         pred_yaw_list.append(data["pred_yaw_angle"])
         true_yaw_list.append(data["true_yaw"])
 
-    pred_dist_mae_pixel, pred_dist_rmse_pixel = model._common_val_test_loss(torch.Tensor(np.array(pred_coarse_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
-    pred_dist_mae_pixel = round(pred_dist_mae_pixel.detach().item(), 2)
-    pred_dist_rmse_pixel = round(pred_dist_rmse_pixel.detach().item(), 2)
+    pred_df = pd.DataFrame({
+        "latitude": [ lat for lat, _ in pred_coarse_coordinate_list],
+        "longitude": [ lon for _, lon in pred_coarse_coordinate_list]
+    })
+    pred_df.to_csv(Path(args.output_dir).joinpath("pred_coordinates.csv"))
+
+    true_df = pd.DataFrame({
+        "latitude": [ lat for lat, _ in true_coordinate_list],
+        "longitude": [ lon for _, lon in true_coordinate_list]
+    })
+    true_df.to_csv(Path(args.output_dir).joinpath("true_coordinates.csv"))
+
+    # pred_dist_mae_pixel, pred_dist_rmse_pixel = model._common_val_test_loss(torch.Tensor(np.array(pred_coarse_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
+    # pred_dist_mae_pixel = round(pred_dist_mae_pixel.detach().item(), 2)
+    # pred_dist_rmse_pixel = round(pred_dist_rmse_pixel.detach().item(), 2)
+    dist_error_result = calculate_location_error_metrics(true_coordinate_list, pred_coarse_coordinate_list)
 
     pred_yaw_mae, pred_yaw_rmse = calculate_angle_error(pred_yaw_list, true_yaw_list)
     pred_yaw_mae = round(pred_yaw_mae, 2)
     pred_yaw_rmse = round(pred_yaw_rmse, 2)
 
     data = {
-        "Pred Coarse Dist MAE(pixel)": pred_dist_mae_pixel,
-        "Pred Coarse Dist RMSE(pixel)": pred_dist_rmse_pixel,
+        "Pred Coarse Dist MAE(pixel)": dist_error_result['mae_meters'],
+        "Pred Coarse Dist RMSE(pixel)": dist_error_result['rmse_meters'],
         "Pred Yaw MAE(degree)": pred_yaw_mae,
         "Pred Yaw RMSE(degree)": pred_yaw_rmse
     }
-    log_pred_result(data, Path(args.output_dir), "test_result_2.json")
+    print(data)
+    log_pred_result(data, Path(args.output_dir), "test_result.json")
 
-    visualize(pred_coarse_coordinate_list, true_coordinate_list, Path(args.output_dir), args.sat_img)
+    # visualize(pred_coarse_coordinate_list, true_coordinate_list, Path(args.output_dir), args.sat_img)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Inference GeoCLIP")

@@ -22,8 +22,9 @@ if __name__ == '__main__':
     parser.add_argument("--ckpt_folder", type=str, default='output', help="checkpoint folder")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--ds_folder", type=str, default=r"~/Documents/hsun/datasets/NTU_playground_Cross_Season_100k", help="dataset folder path")
-    parser.add_argument("--dataset_file", type=str, default=r"taipei.csv", help="dataset csv file")
+    parser.add_argument("--dataset_file", type=str, default=r"dataset.csv", help="dataset csv file")
     parser.add_argument("--scheduler_gamma", type=float, default=0.5)
+    parser.add_argument("--sat_img", type=str)
     args = parser.parse_args()
 
     ACCELERATOR = 'gpu' if torch.cuda.is_available() else 'cpu'
@@ -42,11 +43,10 @@ if __name__ == '__main__':
         dataset_folder=str(DATASET_ROOT),
         train_csv=str(TRAIN_CSV),
         val_csv=str(VAL_CSV),
-        dataset_type=DataLoaderTypesEnum.CrossSeasonPose,
+        dataset_type=DataLoaderTypesEnum.DJIPose,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224,
-        is_cross_season=True,
     )
 
     datamodule.setup('fit')
@@ -72,7 +72,12 @@ if __name__ == '__main__':
         verbose=True,
         mode='min'
     )
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), learning_rate=args.lr, scheduler_gamma=args.scheduler_gamma)
+    model = GeoCLIPLightning(
+        gallery_path=str(VAL_COORDINATE_GALLERY),
+        clip_model_name="google/siglip2-base-patch16-224",
+        sat_img=args.sat_img,
+        learning_rate=args.lr,
+        scheduler_gamma=args.scheduler_gamma)
 
     tensorboard_logger = pl.loggers.TensorBoardLogger(save_dir="logs", name=args.name)
 

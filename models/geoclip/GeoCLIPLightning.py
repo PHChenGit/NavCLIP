@@ -9,7 +9,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR, MultiStepLR
 
 import pytorch_lightning as pl
-from transformers import CLIPModel, AutoProcessor
+from transformers import CLIPModel, AutoModel, AutoProcessor
 from PIL import Image as IM
 
 from .image_encoder import ImageEncoder
@@ -19,7 +19,6 @@ from .misc import (
     denormalize_and_restore_image,
     estimate_rotation_angle,
     crop_image,
-    get_neighbors,
 )
 
 class GeoCLIPLightning(pl.LightningModule):
@@ -36,15 +35,17 @@ class GeoCLIPLightning(pl.LightningModule):
         self.save_hyperparameters()
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.CLIP = CLIPModel.from_pretrained(clip_model_name)
+        # self.CLIP = CLIPModel.from_pretrained(clip_model_name)
         # self.image_processor = AutoProcessor.from_pretrained(clip_model_name)
+        self.image_backbone = AutoModel.from_pretrained(clip_model_name)
+        self.image_processor = AutoProcessor.from_pretrained(clip_model_name)
         self.image_encoder = ImageEncoder()
         self.location_encoder = LocationEncoder()
 
         self.gps_gallery: torch.Tensor = load_gallery_data(gallery_path)
         self._initialize_gps_queue(queue_size)
 
-        for param in self.CLIP.parameters():
+        for param in self.image_backbone.parameters():
             param.requires_grad = False
 
         self.criterion = nn.CrossEntropyLoss()
@@ -108,8 +109,11 @@ class GeoCLIPLightning(pl.LightningModule):
         return self.gps_queue.t()
 
     def encode_image(self, image):
+        # inputs = self.image_processor(images=[image], return_tensors="pt").to("cuda")
         with torch.no_grad(): # 通常 CLIP 主幹不訓練
-            image_embeddings = self.CLIP.get_image_features(pixel_values=image) # [B, 768]
+            # image_embeddings = self.CLIP.get_image_features(pixel_values=image) # [B, 768]
+            image_embeddings = self.image_backbone.get_image_features(image) # [B, 768]
+
         image_features = self.image_encoder(image_embeddings) # [B, 512]
         image_features = F.normalize(image_features, dim=1)
         return image_features
@@ -147,7 +151,7 @@ class GeoCLIPLightning(pl.LightningModule):
 
             return loss
 
-        ref_imgs, query_imgs, coordinates, yaws = batch
+        ref_imgs, query_imgs, gps_coordinate, coordinates, yaws = batch
         batch_size = ref_imgs.shape[0]
 
         gps_queue = self.get_gps_queue()
@@ -167,7 +171,7 @@ class GeoCLIPLightning(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        ref_imgs, query_imgs, coordinates, yaws = batch
+        ref_imgs, query_imgs, gps_coordinate, coordinates, yaws = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
@@ -233,8 +237,9 @@ class GeoCLIPLightning(pl.LightningModule):
 
     def configure_optimizers(self):
         params_to_optimize = [
-            {'params': self.image_encoder.parameters(), "lr": 3e-4},
-            {'params': self.location_encoder.parameters(), "lr": 3e-4},
+            {'params': self.image_encoder.parameters(), "lr": self.hparams.learning_rate},
+            {'params': self.location_encoder.parameters(), "lr": self.hparams.learning_rate},
+            {'params': [self.logit_scale], "lr": self.hparams.learning_rate},
         ]
 
         optimizer = AdamW(params_to_optimize,
@@ -243,9 +248,9 @@ class GeoCLIPLightning(pl.LightningModule):
                           betas=(0.9, 0.999),
                           eps=1e-08)
 
-        # scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+        scheduler = StepLR(optimizer, step_size=5000, gamma=0.5)
         # scheduler = MultiStepLR(optimizer, [30, 60, 80], gamma=self.hparams.scheduler_gamma)
-        scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
+        # scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
 
         return {
             'optimizer': optimizer,

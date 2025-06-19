@@ -38,7 +38,7 @@ class LocationEncoder(nn.Module):
         device = next(self.parameters()).device
         if location.device != device:
             location = location.to(device)
-        x_max, y_max = 3840, 2160
+        x_max, y_max = 3923, 2006
         location_norm = location.clone()
         location_norm[:, 0] = location[:, 0] / x_max
         location_norm[:, 1] = location[:, 1] / y_max
