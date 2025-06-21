@@ -655,19 +655,25 @@ class TestPoseDataLoader(Dataset):
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
             ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
             query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
-            if exists(ref_img_path) and exists(query_img_path):
-                ref_imgs.append(ref_img_path)
-                query_imgs.append(query_img_path)
-                latitude = float(row['LAT'])
-                longitude = float(row['LON'])
-                gps_coordinates.append((latitude, longitude))
 
-                x = float(row['PIXEL_X'])
-                y = float(row['PIXEL_Y'])
-                pixel_coordinates.append((x, y))
+            if not exists(ref_img_path):
+                raise FileNotFoundError(ref_img_path)
+            
+            if not exists(query_img_path):
+                raise FileNotFoundError(query_img_path)
 
-                yaw = float(row['YAW'])
-                yaws.append(yaw)
+            ref_imgs.append(ref_img_path)
+            query_imgs.append(query_img_path)
+            latitude = float(row['LAT'])
+            longitude = float(row['LON'])
+            gps_coordinates.append((latitude, longitude))
+
+            x = float(row['PIXEL_X'])
+            y = float(row['PIXEL_Y'])
+            pixel_coordinates.append((x, y))
+
+            yaw = float(row['YAW'])
+            yaws.append(yaw)
 
         return ref_imgs, query_imgs, gps_coordinates, pixel_coordinates, yaws
     
