@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import StepLR, MultiStepLR
+from torch.optim.lr_scheduler import StepLR, MultiStepLR, CosineAnnealingLR
 
 import pytorch_lightning as pl
 from transformers import CLIPModel, AutoModel, AutoProcessor
@@ -30,6 +30,7 @@ class GeoCLIPLightning(pl.LightningModule):
                  learning_rate: float = 1e-4,
                  weight_decay: float = 0.01,
                  scheduler_gamma: float = 0.5,
+                 epochs: int = 500,
                  ):
         super().__init__()
         self.save_hyperparameters()
@@ -191,7 +192,7 @@ class GeoCLIPLightning(pl.LightningModule):
         return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        query_imgs, coordinates, yaws = batch
+        ref_img, query_imgs, coordinates, pixel_coordinate, yaws = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
@@ -206,9 +207,10 @@ class GeoCLIPLightning(pl.LightningModule):
         pred_coordinate = self.gps_gallery[top_pred.indices[0]]
 
         img_h, img_w = query_imgs.shape[2], query_imgs.shape[3] # B, C, H, W = [1, 3, 224, 224])
-        best_pred_coordinates = pred_coordinate[0].cpu().numpy()
+        best_pred_coordinates = pred_coordinate[0].detach().cpu().numpy()
         best_pred_img: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
         restored_query_imgs: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
+
         best_H_pred = None
         best_yaw_pred = 0.
         best_matches = None
@@ -222,15 +224,15 @@ class GeoCLIPLightning(pl.LightningModule):
 
         if best_H_pred is None:
             return {
-                "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-                "true_coordinate": coordinates.cpu().numpy(),
+                "pred_coarse_coordinate": best_pred_coordinates,
+                "true_coordinate": coordinates[0].detach().cpu().numpy(),
                 "pred_yaw_angle": np.nan,
                 "true_yaw": yaws.cpu().numpy()
             }
 
         return {
-            "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-            "true_coordinate": coordinates.cpu().numpy(),
+            "pred_coarse_coordinate": best_pred_coordinates,
+            "true_coordinate": coordinates[0].detach().cpu().numpy(),
             "pred_yaw_angle": best_yaw_pred,
             "true_yaw": yaws.cpu().numpy()
         }
@@ -248,9 +250,8 @@ class GeoCLIPLightning(pl.LightningModule):
                           betas=(0.9, 0.999),
                           eps=1e-08)
 
-        scheduler = StepLR(optimizer, step_size=5000, gamma=0.5)
-        # scheduler = MultiStepLR(optimizer, [30, 60, 80], gamma=self.hparams.scheduler_gamma)
-        # scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
+        # scheduler = StepLR(optimizer, step_size=5000, gamma=0.5)
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.epochs, eta_min=1e-6)
 
         return {
             'optimizer': optimizer,

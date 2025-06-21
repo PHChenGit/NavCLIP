@@ -77,7 +77,9 @@ if __name__ == '__main__':
         clip_model_name="google/siglip2-base-patch16-224",
         sat_img=args.sat_img,
         learning_rate=args.lr,
-        scheduler_gamma=args.scheduler_gamma)
+        scheduler_gamma=args.scheduler_gamma,
+        epochs=args.epochs,
+        )
 
     tensorboard_logger = pl.loggers.TensorBoardLogger(save_dir="logs", name=args.name)
 
