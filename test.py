@@ -137,7 +137,12 @@ def main(args):
     if not COORDINATE_GALLERY.exists():
         create_gallery(COORDINATE_GALLERY.parent, pred_dataloader)
 
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), sat_img=args.sat_img, clip_model_name="google/siglip2-base-patch16-224")
+    model = GeoCLIPLightning(
+        gallery_path=str(COORDINATE_GALLERY),
+        sat_img=args.sat_img_png,
+        clip_model_name="google/siglip2-base-patch16-224",
+        homography_method="mapglue"
+        )
     model.load_weights(args.pretrained_model_dir)
     trainer = Trainer(
         default_root_dir='output',
@@ -145,7 +150,7 @@ def main(args):
     )
     pred_result: List[Dict] = trainer.predict(model, datamodule=datamodule)
 
-    sat_processor = SatelliteImageProcessor(args.sat_img)
+    sat_processor = SatelliteImageProcessor(args.sat_img_tif)
 
     pred_coarse_coordinate_list = []
     true_coordinate_list = []
@@ -157,7 +162,7 @@ def main(args):
 
         pred_gps_coord = sat_processor.pixel_to_gps(data["pred_coarse_coordinate"][0], data["pred_coarse_coordinate"][1])
         # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, EPGS 3857: {pred_gps_coord}")
-        pred_gps_coord = sat_processor.convert_crs(CRS("EPSG:3857"), CRS("EPSG:4326"), pred_gps_coord[0], pred_gps_coord[1])
+        pred_gps_coord = sat_processor.convert_crs(sat_processor.crs, CRS("EPSG:4326"), pred_gps_coord[0], pred_gps_coord[1])
         # print(f"EPSG 4326: {pred_gps_coord}")
         # break
         # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, gps coordinates: {pred_gps_coord}")
@@ -199,7 +204,7 @@ def main(args):
     print(data)
     log_pred_result(data, Path(args.output_dir), "test_result.json")
 
-    visualize_error_histogram(np.array(dist_error_result['error_list']), Path(args.output_dir))
+    # visualize_error_histogram(np.array(dist_error_result['error_list']), Path(args.output_dir))
     visualize_error_histogram(
         np.array(yaw_error_list).squeeze(),
         Path(args.output_dir),
@@ -219,7 +224,8 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, help="Prediction result folder")
     parser.add_argument("--ds_folder", type=str, default=r"~/Documents/hsun/datasets/NTU_playground_Cross_Season_100k", help="dataset folder path")
     parser.add_argument("--dataset_file", type=str, default=r"taipei.csv", help="dataset csv file")
-    parser.add_argument("--sat_img", type=str, default=r"~/Documents/hsun/datasets/satellites/202410_NTU_playground.jpg", help="dataset folder path")
+    parser.add_argument("--sat_img_png", type=str, default=r"~/Documents/hsun/datasets/satellites/202410_NTU_playground.jpg", help="dataset folder path")
+    parser.add_argument("--sat_img_tif", type=str, default=r"~/Documents/hsun/datasets/satellites/202410_NTU_playground.jpg", help="dataset folder path")
     args = parser.parse_args()
     main(args)
 

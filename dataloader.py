@@ -42,8 +42,8 @@ def img_val_transform(size=224):
 def img_test_transform(size=224):
      # Usually test/predict also need normalization if the model expects it
     return transforms.Compose([
-        transforms.CenterCrop((size, size)),
         transforms.Resize((size, size)), # Ensure consistent input size
+        transforms.CenterCrop((size, size)),
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -500,9 +500,11 @@ class DJIPoseDataLoader(Dataset):
 
         self.ref_imgs, self.query_imgs, self.coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
 
-        DJI_datasets = ["~/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_1_gps_to_pixel/test/dataset.csv",
-            "~/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_2_gps_to_pixel/test/dataset.csv",
-            "~/Documents/hsun/datasets/DJI_NTU/60fps/DJI_NTU_router_3_gps_to_pixel/test/dataset.csv"]
+        DJI_datasets = [
+            "~/Documents/hsun/datasets/DJI_NTU_3/60fps/DJI_NTU_router_1_gps_to_pixel/test/dataset.csv",
+            "~/Documents/hsun/datasets/DJI_NTU_3/60fps/DJI_NTU_router_2_gps_to_pixel/test/dataset.csv",
+            "~/Documents/hsun/datasets/DJI_NTU_3/60fps/DJI_NTU_router_3_gps_to_pixel/test/dataset.csv"
+            ]
         
         for route_ds in DJI_datasets:
             ref_imgs, query_imgs, dji_coordinates, px_coord, dji_yaws = self._load_DJI_dataset(Path(route_ds).expanduser().parent.parent, route_ds)
@@ -631,7 +633,6 @@ class TestPoseDataLoader(Dataset):
     def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
         self.dataset_folder = dataset_folder
         self.transform = transform
-        self.ref_transfrom = img_test_transform(384)
         self.img_size = size
 
         self.ref_imgs, self.query_imgs, self.gps_coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
@@ -693,7 +694,7 @@ class TestPoseDataLoader(Dataset):
 
         if self.transform:
             query_img = self.transform(query_img)
-            ref_img = self.ref_transfrom(ref_img)
+            ref_img = self.transform(ref_img)
         else:
             query_img = F.to_tensor(query_img)
 

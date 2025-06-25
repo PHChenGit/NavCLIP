@@ -13,6 +13,7 @@ from geopy.distance import geodesic
 
 import torch
 import torchvision.transforms as T
+import torch.nn as nn
 
 file_dir = os.path.dirname(os.path.realpath(__file__))
 
@@ -110,6 +111,39 @@ def estimate_rotation_angle(model, ref_img: npt.NDArray, query_img: npt.NDArray)
 
     return H_pred, yaw_angle, inlier_mask
 
+# def lightglue_estimate_rotation_angle(extractor, matcher, ref_img: npt.NDArray, query_img: npt.NDArray) -> Tuple[npt.NDArray, float, npt.NDArray]:
+#     from models.lightglue.utils import rbd
+#     feats0 = extractor.extract(ref_img)  # auto-resize the image, disable with resize=None
+#     feats1 = extractor.extract(query_img)
+#     matches01 = matcher({'image0': feats0, 'image1': feats1})
+#     feats0, feats1, matches01 = [rbd(x) for x in [feats0, feats1, matches01]]  # remove batch dimension
+#     matches = matches01['matches']
+#     points0 = feats0['keypoints'][matches[..., 0]]
+#     points1 = feats1['keypoints'][matches[..., 1]]
+
+#     if points0.shape[0] < 4:
+#         raise Exception("points0 less than 4")
+
+#     H_pred, inlier_mask = cv2.findHomography(points0.cpu().numpy(), points1.cpu().numpy(), cv2.USAC_MAGSAC, ransacReprojThreshold=3, maxIters=10000, confidence=0.9999)
+
+#     if H_pred is None or not H_pred.all():
+#         raise Exception("H_pred is None")
+
+#     inlier_mask = inlier_mask.ravel() > 0
+#     m_kpts0_valid = points0[inlier_mask]
+#     m_kpts1_valid = points1[inlier_mask]
+
+#     A = H_pred[0:2, 0:2]
+#     a = A[0, 0]
+#     b = A[0, 1]
+#     c = A[1, 0]
+#     d = A[1, 1]
+#     yaw_rad = np.arctan2(c, d) if np.isclose(a, d) and np.isclose(-b, c) else np.arctan2(-b, a)
+#     # yaw_rad = np.arctan2(H_pred[1, 0], H_pred[0, 0])
+#     yaw_angle = np.rad2deg(yaw_rad)
+
+#     return H_pred, yaw_angle, inlier_mask
+
 def angle_diff(a: float, b: float) -> float:
     diff = (a - b + 180) % 360 - 180
     return diff
@@ -118,7 +152,7 @@ def calculate_angle_error(true_angles: list, pred_angles: list) -> Tuple[float, 
     angle_diffs = [abs(angle_diff(p, g)) for p, g in zip(pred_angles, true_angles)]
     mae = np.mean(angle_diffs)
     rmse = np.sqrt(np.mean(np.square(angle_diffs)))
-    return mae, rmse
+    return mae, rmse, angle_diffs
 
 
 def calculate_dist(true_coordinates: npt.NDArray, pred_coordinates: npt.NDArray):
@@ -182,5 +216,6 @@ def calculate_location_error_metrics(true_locations: List[Tuple[float, float]], 
 
     return {
         "mae_meters": mae,
-        "rmse_meters": rmse
+        "rmse_meters": rmse,
+        'error_list': distance_errors_meters
     }
