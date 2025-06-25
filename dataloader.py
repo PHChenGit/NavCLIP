@@ -498,7 +498,7 @@ class DJIPoseDataLoader(Dataset):
         self.rotate_angles = list(range(-180, 180, 15))
         self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
 
-        self.ref_imgs, self.query_imgs, self.coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
+        self.ref_imgs, self.query_imgs, self.gps_coordinates_3d, self.pixel_coordinates_3d = self._load_dataset(dataset_file)
 
         DJI_datasets = [
             "~/Documents/hsun/datasets/DJI_NTU_3/60fps/DJI_NTU_router_1_gps_to_pixel/test/dataset.csv",
@@ -507,12 +507,12 @@ class DJIPoseDataLoader(Dataset):
             ]
         
         for route_ds in DJI_datasets:
-            ref_imgs, query_imgs, dji_coordinates, px_coord, dji_yaws = self._load_DJI_dataset(Path(route_ds).expanduser().parent.parent, route_ds)
+            ref_imgs, query_imgs, dji_coordinates_3d, px_coord_3d = self._load_DJI_dataset(Path(route_ds).expanduser().parent.parent, route_ds)
             self.ref_imgs = np.concatenate([self.ref_imgs, ref_imgs])
             self.query_imgs = np.concatenate([self.query_imgs, query_imgs])
-            self.coordinates = np.concatenate([np.array(self.coordinates), np.array(dji_coordinates)])
-            self.pixel_coordinates = np.concatenate([np.array(self.pixel_coordinates), np.array(px_coord)])
-            self.yaws = np.concatenate([self.yaws, dji_yaws])
+            self.gps_coordinates_3d = np.concatenate([np.array(self.gps_coordinates_3d), np.array(dji_coordinates_3d)])
+            self.pixel_coordinates_3d = np.concatenate([np.array(self.pixel_coordinates_3d), np.array(px_coord_3d)])
+
 
     def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
         try:
@@ -525,9 +525,8 @@ class DJIPoseDataLoader(Dataset):
 
         ref_imgs = []
         query_imgs = []
-        gps_coordinates = []
-        pixel_coordinates = []
-        yaws = []
+        gps_coordinates_3d = []
+        pixel_coordinates_3d = []
 
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
@@ -544,15 +543,13 @@ class DJIPoseDataLoader(Dataset):
             query_imgs.append(query_img_path)
             latitude = float(row['LAT'])
             longitude = float(row['LON'])
-            gps_coordinates.append((latitude, longitude))
+            gps_coordinates_3d.append((latitude, longitude, np.nan))
 
             x = float(row['PIXEL_X'])
             y = float(row['PIXEL_Y'])
-            pixel_coordinates.append((x, y))
-
-            yaws.append(np.nan)
+            pixel_coordinates_3d.append((x, y, np.nan))
         
-        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates), np.array(pixel_coordinates), np.array(yaws)
+        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates_3d), np.array(pixel_coordinates_3d)
     
     def _load_DJI_dataset(self, ds_folder,  dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON', 'YAW'}):
         try:
@@ -565,9 +562,9 @@ class DJIPoseDataLoader(Dataset):
 
         ref_imgs = []
         query_imgs = []
-        gps_coordinates = []
-        pixel_coordinates = []
-        yaws = []
+        gps_coordinates_3d = []
+        pixel_coordinates_3d = []
+
         random_sample_df = dataset_info.sample(n=30, random_state=42)
 
         print(f">\tLoading dataset info from: {dataset_file}")
@@ -585,15 +582,14 @@ class DJIPoseDataLoader(Dataset):
             query_imgs.append(query_img_path)
             latitude = float(row['LAT'])
             longitude = float(row['LON'])
-            gps_coordinates.append((latitude, longitude))
+            yaw = float(row['YAW'])
+            gps_coordinates_3d.append((latitude, longitude, yaw))
 
             x = float(row['PIXEL_X'])
             y = float(row['PIXEL_Y'])
-            pixel_coordinates.append((x, y))
-            
-            yaws.append(float(row['YAW']))
+            pixel_coordinates_3d.append((x, y, yaw))
 
-        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates), np.array(pixel_coordinates), np.array(yaws)
+        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates_3d), np.array(pixel_coordinates_3d)
     
     def __len__(self):
         return len(self.ref_imgs)
@@ -601,16 +597,16 @@ class DJIPoseDataLoader(Dataset):
     def __getitem__(self, idx):
         ref_img_path = self.ref_imgs[idx]
         query_img_path = self.query_imgs[idx]
-        gps_coordinate = self.coordinates[idx]
-        pixel_coordinate = self.pixel_coordinates[idx]
-        yaw = self.yaws[idx]
+        gps_coordinate = self.gps_coordinates_3d[idx]
+        pixel_coordinate = self.pixel_coordinates_3d[idx]
 
         ref_img = IM.open(ref_img_path).convert('RGB')
         query_img = IM.open(query_img_path).convert('RGB')
 
-        if np.isnan(yaw):
+        if np.isnan(pixel_coordinate[2]):
             rotate_angle, query_img = self.rotation_transform(query_img.copy())
-            yaw = rotate_angle
+            pixel_coordinate[2] = rotate_angle
+            gps_coordinate[2] = rotate_angle
 
         if self.transform:
             ref_img = self.transform(ref_img)
@@ -621,9 +617,8 @@ class DJIPoseDataLoader(Dataset):
 
         gps_coordinate = torch.tensor(gps_coordinate, dtype=torch.float32)
         pixel_coordinate = torch.tensor(pixel_coordinate, dtype=torch.float32)
-        yaw = torch.tensor(yaw, dtype=torch.float32)
 
-        return ref_img, query_img, gps_coordinate, pixel_coordinate, yaw
+        return ref_img, query_img, gps_coordinate, pixel_coordinate
 
 
 class TestPoseDataLoader(Dataset):
@@ -635,7 +630,7 @@ class TestPoseDataLoader(Dataset):
         self.transform = transform
         self.img_size = size
 
-        self.ref_imgs, self.query_imgs, self.gps_coordinates, self.pixel_coordinates, self.yaws = self._load_dataset(dataset_file)
+        self.ref_imgs, self.query_imgs, self.gps_coordinates, self.pixel_coordinates = self._load_dataset(dataset_file)
 
     def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
         try:
@@ -650,33 +645,25 @@ class TestPoseDataLoader(Dataset):
         query_imgs = []
         gps_coordinates = []
         pixel_coordinates = []
-        yaws = []
 
         print(f">\tLoading dataset info from: {dataset_file}")
         for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
             ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
             query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+            if exists(ref_img_path) and exists(query_img_path):
+                ref_imgs.append(ref_img_path)
+                query_imgs.append(query_img_path)
+                yaw = float(row['YAW'])
 
-            if not exists(ref_img_path):
-                raise FileNotFoundError(ref_img_path)
-            
-            if not exists(query_img_path):
-                raise FileNotFoundError(query_img_path)
+                latitude = float(row['LAT'])
+                longitude = float(row['LON'])
+                gps_coordinates.append((latitude, longitude, yaw))
 
-            ref_imgs.append(ref_img_path)
-            query_imgs.append(query_img_path)
-            latitude = float(row['LAT'])
-            longitude = float(row['LON'])
-            gps_coordinates.append((latitude, longitude))
+                x = float(row['PIXEL_X'])
+                y = float(row['PIXEL_Y'])
+                pixel_coordinates.append((x, y, yaw))
 
-            x = float(row['PIXEL_X'])
-            y = float(row['PIXEL_Y'])
-            pixel_coordinates.append((x, y))
-
-            yaw = float(row['YAW'])
-            yaws.append(yaw)
-
-        return ref_imgs, query_imgs, gps_coordinates, pixel_coordinates, yaws
+        return ref_imgs, query_imgs, gps_coordinates, pixel_coordinates
     
     def __len__(self):
         return len(self.ref_imgs)
@@ -686,7 +673,6 @@ class TestPoseDataLoader(Dataset):
         query_img_path = self.query_imgs[idx]
         gps_coordinate = self.gps_coordinates[idx]
         pixel_coordinate = self.pixel_coordinates[idx]
-        yaw = self.yaws[idx]
 
         ref_img = IM.open(ref_img_path).convert('RGB')
         query_img = IM.open(query_img_path).convert('RGB')
@@ -700,9 +686,8 @@ class TestPoseDataLoader(Dataset):
 
         gps_coordinate = torch.tensor(gps_coordinate, dtype=torch.float)
         pixel_coordinate = torch.tensor(pixel_coordinate, dtype=torch.float)
-        yaw = torch.tensor(yaw)
 
-        return ref_img, query_img, gps_coordinate, pixel_coordinate, yaw
+        return ref_img, query_img, gps_coordinate, pixel_coordinate
 
 class DataLoaderTypesEnum(Enum):
     Pose = 'Pose'

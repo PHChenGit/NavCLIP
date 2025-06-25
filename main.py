@@ -36,7 +36,7 @@ if __name__ == '__main__':
     TRAIN_CSV = DATASET_ROOT.joinpath('train', CSV_FILE)
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
+    # COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
     VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
 
     datamodule = GeoCLIPDataModule(
@@ -52,8 +52,6 @@ if __name__ == '__main__':
     datamodule.setup('fit')
     train_dataloader = datamodule.train_dataloader()
     val_dataloader = datamodule.val_dataloader()
-    if not COORDINATE_GALLERY.exists():
-        create_gallery(COORDINATE_GALLERY.parent, train_dataloader)
 
     if not VAL_COORDINATE_GALLERY.exists():
         create_gallery(VAL_COORDINATE_GALLERY.parent, val_dataloader)
@@ -87,6 +85,8 @@ if __name__ == '__main__':
         default_root_dir='output',
         max_epochs=args.epochs,
         accelerator=ACCELERATOR,
+        devices="auto",
+        precision="bf16-mixed",
         callbacks=[checkpoint_callback, early_stop_callback],
         logger=tensorboard_logger,
         log_every_n_steps=50,

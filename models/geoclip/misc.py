@@ -43,10 +43,11 @@ def create_gallery(gallery_folder, data_loader):
             total=len(data_loader),
             desc="Creating pose gallery",
         )
-        for i, (_, _, gps_coordinate, pixel_coordinate, _) in bar:
-            for coord in pixel_coordinate:
-                lat, lon = coord.detach().cpu().numpy()
+        for i, (_, _, gps_coordinate, pixel_coordinates) in bar:
+            for loc_3d in pixel_coordinates:
+                lat, lon, _ = loc_3d.detach().cpu().numpy()
                 all_pose.append([lat, lon])
+
         df = pd.DataFrame(all_pose, columns=["LAT", "LON"])
         df.to_csv(gallery_path, index=False)
         print(f"gallery is created successfully: {gallery_path}")
@@ -219,3 +220,7 @@ def calculate_location_error_metrics(true_locations: List[Tuple[float, float]], 
         "rmse_meters": rmse,
         'error_list': distance_errors_meters
     }
+
+class QuickGELU(nn.Module):
+    def forward(self, x: torch.Tensor):
+        return x * torch.sigmoid(1.702 * x)

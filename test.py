@@ -143,6 +143,7 @@ def main(args):
         clip_model_name="google/siglip2-base-patch16-224",
         homography_method="mapglue"
         )
+
     model.load_weights(args.pretrained_model_dir)
     trainer = Trainer(
         default_root_dir='output',
@@ -152,7 +153,7 @@ def main(args):
 
     sat_processor = SatelliteImageProcessor(args.sat_img_tif)
 
-    pred_coarse_coordinate_list = []
+    pred_coordinate_list = []
     true_coordinate_list = []
     pred_yaw_list = []
     true_yaw_list = []
@@ -160,22 +161,17 @@ def main(args):
         if np.any(np.isnan(data["pred_yaw_angle"])):
             continue
 
-        pred_gps_coord = sat_processor.pixel_to_gps(data["pred_coarse_coordinate"][0], data["pred_coarse_coordinate"][1])
-        # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, EPGS 3857: {pred_gps_coord}")
+        pred_gps_coord = sat_processor.pixel_to_gps(data["pred_coordinate"][0], data["pred_coordinate"][1])
         pred_gps_coord = sat_processor.convert_crs(sat_processor.crs, CRS("EPSG:4326"), pred_gps_coord[0], pred_gps_coord[1])
-        # print(f"EPSG 4326: {pred_gps_coord}")
-        # break
-        # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, gps coordinates: {pred_gps_coord}")
-        # break
 
-        pred_coarse_coordinate_list.append(pred_gps_coord)
+        pred_coordinate_list.append(pred_gps_coord)
         true_coordinate_list.append(data["true_coordinate"])
         pred_yaw_list.append(data["pred_yaw_angle"])
         true_yaw_list.append(data["true_yaw"])
 
     pred_df = pd.DataFrame({
-        "latitude": [ lat for lat, _ in pred_coarse_coordinate_list],
-        "longitude": [ lon for _, lon in pred_coarse_coordinate_list]
+        "latitude": [ lat for lat, _ in pred_coordinate_list],
+        "longitude": [ lon for _, lon in pred_coordinate_list]
     })
     pred_df.to_csv(Path(args.output_dir).joinpath("pred_coordinates.csv"))
 
@@ -185,21 +181,19 @@ def main(args):
     })
     true_df.to_csv(Path(args.output_dir).joinpath("true_coordinates.csv"))
 
-    # pred_dist_mae_pixel, pred_dist_rmse_pixel = model._common_val_test_loss(torch.Tensor(np.array(pred_coarse_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
+    # pred_dist_mae_pixel, pred_dist_rmse_pixel = model._common_val_test_loss(torch.Tensor(np.array(pred_coordinate_list)), torch.Tensor(np.array(true_coordinate_list)))
     # pred_dist_mae_pixel = round(pred_dist_mae_pixel.detach().item(), 2)
     # pred_dist_rmse_pixel = round(pred_dist_rmse_pixel.detach().item(), 2)
-    dist_error_result = calculate_location_error_metrics(true_coordinate_list, pred_coarse_coordinate_list)
+    dist_error_result = calculate_location_error_metrics(true_coordinate_list, pred_coordinate_list)
 
     pred_yaw_mae, pred_yaw_rmse, yaw_error_list = calculate_angle_error(pred_yaw_list, true_yaw_list)
     yaw_error_list = np.array(yaw_error_list).squeeze()
-    pred_yaw_mae = round(pred_yaw_mae, 2)
-    pred_yaw_rmse = round(pred_yaw_rmse, 2)
 
     data = {
-        "Pred Coarse Dist MAE(pixel)": dist_error_result['mae_meters'],
-        "Pred Coarse Dist RMSE(pixel)": dist_error_result['rmse_meters'],
-        "Pred Yaw MAE(degree)": pred_yaw_mae,
-        "Pred Yaw RMSE(degree)": pred_yaw_rmse
+        "Pred Dist MAE(meters)": round(dist_error_result['mae_meters'], 2),
+        "Pred Dist RMSE(meters)": round(dist_error_result['rmse_meters'], 2),
+        "Pred Yaw MAE(degree)": round(pred_yaw_mae, 2),
+        "Pred Yaw RMSE(degree)": round(pred_yaw_rmse, 2)
     }
     print(data)
     log_pred_result(data, Path(args.output_dir), "test_result.json")

@@ -4,6 +4,32 @@ import torch.nn.functional as F
 from torch.nn import MultiheadAttention, LayerNorm
 
 
+
+class CrossAttention(nn.Module):
+    """
+    Cross-Attention Module to fuse reference image features into query image features.
+    """
+    def __init__(self, dim=768):
+        super(CrossAttention, self).__init__()
+        self.cross_attention = MultiheadAttention(embed_dim=dim, num_heads=8)
+        self.layer_norm = LayerNorm(dim)
+
+    def forward(self, query, key, value):
+        """
+        Args:
+            query (Tensor): Query features (from query image). Shape: [seq_len, B, dim]
+            key (Tensor): Key features (from reference image). Shape: [seq_len, B, dim]
+            value (Tensor): Value features (from reference image). Shape: [seq_len, B, dim]
+
+        Returns:
+            Tensor: Fused features. Shape: [seq_len, B, dim]
+        """
+        x1 = query
+        attn_output, _ = self.cross_attention(query, key, value)
+        x = x1 + attn_output
+        x = self.layer_norm(x)
+        return x
+
 class CrossAttention(nn.Module):
     """
     Cross-Attention Module to fuse reference image features into query image features.
