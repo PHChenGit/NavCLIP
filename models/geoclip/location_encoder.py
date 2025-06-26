@@ -10,11 +10,11 @@ class LocationEncoderCapsule(nn.Module):
         self.km = sigma
         self.capsule = nn.Sequential(rff_encoding,
                                      nn.Linear(512, 1024),
-                                     nn.ReLU(),
+                                     nn.GELU(),
                                      nn.Linear(1024, 1024),
-                                     nn.ReLU(),
+                                     nn.GELU(),
                                      nn.Linear(1024, 1024),
-                                     nn.ReLU())
+                                     nn.GELU())
         self.head = nn.Sequential(nn.Linear(1024, 512))
 
     def forward(self, x):

@@ -12,20 +12,24 @@ import torchvision.transforms.functional as TF
 import pytorch_lightning as pl
 from transformers import CLIPModel, AutoModel, AutoProcessor
 from PIL import Image as IM
+from pyproj import CRS
 
 from .image_encoder import ImageEncoder
 from .location_encoder import LocationEncoder
+from .satellite_processor import SatelliteImageProcessor
 from .misc import (
     load_gallery_data,
     denormalize_and_restore_image,
     estimate_rotation_angle,
-    crop_image
+    crop_image,
+    calculate_location_error_metrics
 )
 
 class GeoCLIPLightning(pl.LightningModule):
     def __init__(self,
         gallery_path: str,
-        sat_img: str = "",
+        sat_img_png: str = "",
+        sat_img_tif: str = "",
         clip_model_name: str = "openai/clip-vit-large-patch14",
         queue_size: int = 4096,
         learning_rate: float = 1e-4,
@@ -33,29 +37,17 @@ class GeoCLIPLightning(pl.LightningModule):
         scheduler_gamma: float = 0.5,
         epochs: int = 500,
         homography_method: str = 'mapglue',
-        embed_dim: int = 768,
     ):
         super().__init__()
         self.save_hyperparameters()
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.yaw_loss_weight = nn.Parameter(torch.tensor(2.0))
         # self.CLIP = CLIPModel.from_pretrained(clip_model_name)
         # self.image_processor = AutoProcessor.from_pretrained(clip_model_name)
         self.image_backbone = AutoModel.from_pretrained(clip_model_name)
         self.image_processor = AutoProcessor.from_pretrained(clip_model_name)
-        self.image_encoder = ImageEncoder(embed_dim)
+        self.image_encoder = ImageEncoder()
         self.location_encoder = LocationEncoder()
-
-        self.yaw_predictor_head = nn.Sequential(
-            nn.Linear(512, 1024),
-            nn.GELU(),
-            nn.Linear(1024, 512),
-            nn.GELU(),
-            nn.Linear(512, 256),
-            nn.GELU(),
-            nn.Linear(256, 2)
-        )
 
         self.gps_gallery: torch.Tensor = load_gallery_data(gallery_path)
         self._initialize_gps_queue(queue_size)
@@ -64,13 +56,7 @@ class GeoCLIPLightning(pl.LightningModule):
             param.requires_grad = False
 
         self.criterion = nn.CrossEntropyLoss()
-        """
-        For saving prediction result and ground-truth in prediction step
-        """
-        self.pred_coordinate_list = []
-        self.true_coordinate_list = []
-        self.pred_yaw_list = []
-        self.true_yaw_list = []
+
         """
         Only work at prediction stage.
         For estimate uav orientation and refine coordinates
@@ -116,8 +102,8 @@ class GeoCLIPLightning(pl.LightningModule):
         else:
             raise RuntimeError(f"Homography method: {self.hparams.homography_method} is invalid.")
 
-        if sat_img:
-            self.sat_img = IM.open(sat_img).convert('RGB')
+        self.sat_img_png = IM.open(sat_img_png).convert('RGB')
+        self.sat_processor = SatelliteImageProcessor(sat_img_tif)
 
     def load_weights(self, pretrained_dir):
         """Loads weights to the correct device"""
@@ -187,9 +173,7 @@ class GeoCLIPLightning(pl.LightningModule):
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * (image_features @ location_features.t())
 
-        pred_yaw_cossin = self.yaw_predictor_head(image_features) # [cosine, sine]
-
-        return logits_per_image, pred_yaw_cossin
+        return logits_per_image
 
     def angular_loss(self, pred_yaw_cossin, true_yaw_deg):
         """
@@ -228,19 +212,20 @@ class GeoCLIPLightning(pl.LightningModule):
         self.dequeue_and_enqueue(location_2d)
         labels = torch.arange(batch_size, dtype=torch.long, device=self.device)
 
-        logits_img_loc, pred_yaw_cossin = self.forward(query_imgs, ref_imgs, gps_all)
+        logits_img_loc = self.forward(query_imgs, ref_imgs, gps_all)
 
         location_loss = self.criterion(logits_img_loc, labels)
-        yaw_mae_loss, yaw_rmse_loss = self.angular_loss(pred_yaw_cossin, true_yaw_deg)
+        # yaw_mae_loss, yaw_rmse_loss = self.angular_loss(pred_yaw_cossin, true_yaw_deg)
 
-        total_loss = location_loss + self.yaw_loss_weight * yaw_rmse_loss
+        # total_loss = location_loss + self.yaw_loss_weight * yaw_rmse_loss
+        total_loss = location_loss
 
         # --- Logging ---
         self.log('Train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        self.log('Train/xy_loss', location_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-        self.log('Train/yaw_MAE_loss', yaw_mae_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-        self.log('Train/yaw_RMSE_loss', yaw_rmse_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-        self.log('Train/yaw_loss_weight', self.yaw_loss_weight, on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        # self.log('Train/xy_loss', location_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        # self.log('Train/yaw_MAE_loss', yaw_mae_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        # self.log('Train/yaw_RMSE_loss', yaw_rmse_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        # self.log('Train/yaw_loss_weight', self.yaw_loss_weight, on_step=True, on_epoch=False, prog_bar=False, logger=True)
         return total_loss
 
     def validation_step(self, batch, batch_idx):
@@ -251,19 +236,42 @@ class GeoCLIPLightning(pl.LightningModule):
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
 
-        logits_img_loc, pred_yaw_cossin = self.forward(query_imgs, ref_imgs, self.gps_gallery)
+        logits_img_loc = self.forward(query_imgs, ref_imgs, self.gps_gallery)
         probs = logits_img_loc.softmax(dim=-1)
         best_augmented_idx = torch.argmax(probs, dim=-1)
         pred_coords_2d = self.gps_gallery[best_augmented_idx]
 
         val_dist_mae, val_dist_rmse = self._calculate_val_loss(pred_coords_2d, true_coords_2d)
-        val_yaw_mae, val_yaw_rmse = self.angular_loss(pred_yaw_cossin, true_yaws)
+
+        pred_coords_2d_np = pred_coords_2d.squeeze().detach().cpu().numpy()
+        true_coords_2d_np = true_coords_2d.squeeze().detach().cpu().numpy()
+        pred_coords_meter = []
+        true_coords_meter = []
+        TARGET_CRS = CRS("EPSG:4326")
+        for (x, y) in pred_coords_2d_np:
+            pred_gps_coord = self.sat_processor.pixel_to_gps(x, y)
+            if self.sat_processor.crs != TARGET_CRS:
+                pred_gps_coord = self.sat_processor.convert_crs(self.sat_processor.crs, TARGET_CRS, pred_gps_coord[0], pred_gps_coord[1])
+                print(f"Pixel (x, y): ({x}, {y}), after convert CRS GPS: {pred_gps_coord}")
+            pred_coords_meter.append(pred_gps_coord)
+
+        for (x, y) in true_coords_2d_np:
+            true_gps_coord = self.sat_processor.pixel_to_gps(x, y)
+            if self.sat_processor.crs != TARGET_CRS:
+                true_gps_coord = self.sat_processor.convert_crs(self.sat_processor.crs, TARGET_CRS, true_gps_coord[0], true_gps_coord[1])
+            true_coords_meter.append(true_gps_coord)
+
+
+        val_dist_result_meter = calculate_location_error_metrics(pred_coords_meter, true_coords_meter)
+        # val_yaw_mae, val_yaw_rmse = self.angular_loss(pred_yaw_cossin, true_yaws)
 
         self.log_dict({
-            'val_dist_MAE': val_dist_mae,
-            'val_dist_RMSE': val_dist_rmse,
-            'Val/Yaw_MAE': val_yaw_mae,
-            'Val/Yaw_RMSE': val_yaw_rmse,
+            'val_dist_MAE_pixel': val_dist_mae,
+            'val_dist_RMSE_pixel': val_dist_rmse,
+            'val_dist_MAE_meters': val_dist_result_meter["mae_meters"],
+            'val_dist_RMSE_meters': val_dist_result_meter["rmse_meters"],
+            # 'Val/Yaw_MAE': val_yaw_mae,
+            # 'Val/Yaw_RMSE': val_yaw_rmse,
         }, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         return val_dist_mae
@@ -277,84 +285,83 @@ class GeoCLIPLightning(pl.LightningModule):
             self.gps_gallery = self.gps_gallery.to(self.device)
 
         with torch.no_grad():
-            logits_img_loc, pred_yaw_cossin = self.forward(query_imgs, ref_imgs, self.gps_gallery)
+            logits_img_loc = self.forward(query_imgs, ref_imgs, self.gps_gallery)
             probs = logits_img_loc.softmax(dim=-1)
             best_augmented_idx = torch.argmax(probs, dim=-1)
             pred_coords_2d = self.gps_gallery[best_augmented_idx]
 
-            pred_sin = pred_yaw_cossin[:, 1]
-            pred_cos = pred_yaw_cossin[:, 0]
-            pred_yaw_rad = torch.atan2(pred_sin, pred_cos)
-            pred_yaw_deg = torch.rad2deg(pred_yaw_rad)
+        _, img_w, img_h = query_imgs.shape()
+        print(f"img_w: {img_w}, img_h: {img_h}")
+        best_pred_coordinates = pred_coords_2d.squeeze().detach().cpu().numpy()
+        uav_img_np: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
+        pred_sat_crop_np: IM.Image =  crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
 
-        # try:
-        #     if self.hparams.homography_method in ['sift', 'orb']:
-        #         gray_uav = cv2.cvtColor(uav_img_np, cv2.COLOR_RGB2GRAY)
-        #         gray_sat = cv2.cvtColor(ref_sat_img_np, cv2.COLOR_RGB2GRAY)
+        try:
+            if self.hparams.homography_method in ['sift', 'orb']:
+                gray_uav = cv2.cvtColor(uav_img_np, cv2.COLOR_RGB2GRAY)
+                gray_sat = cv2.cvtColor(ref_sat_img_np, cv2.COLOR_RGB2GRAY)
                 
-        #         # Detect keypoints and compute descriptors
-        #         kp1, des1 = self.homography_method.detectAndCompute(gray_uav, None)
-        #         kp2, des2 = self.homography_method.detectAndCompute(gray_sat, None)
+                # Detect keypoints and compute descriptors
+                kp1, des1 = self.homography_method.detectAndCompute(gray_uav, None)
+                kp2, des2 = self.homography_method.detectAndCompute(gray_sat, None)
 
-        #         if des1 is None or des2 is None:
-        #             raise Exception("No descriptors found for one or both images.")
+                if des1 is None or des2 is None:
+                    raise Exception("No descriptors found for one or both images.")
                 
-        #         # Match descriptors
-        #         matches = self.matcher.knnMatch(des1, des2, k=2)
+                # Match descriptors
+                matches = self.matcher.knnMatch(des1, des2, k=2)
                 
-        #         # Apply Lowe's ratio test
-        #         good_matches = []
-        #         if matches and len(matches) > 0 and len(matches[0]) == 2:
-        #             for m, n in matches:
-        #                 if m.distance < 0.75 * n.distance:
-        #                     good_matches.append(m)
+                # Apply Lowe's ratio test
+                good_matches = []
+                if matches and len(matches) > 0 and len(matches[0]) == 2:
+                    for m, n in matches:
+                        if m.distance < 0.75 * n.distance:
+                            good_matches.append(m)
                 
-        #         if len(good_matches) < 4: # A common threshold for robust estimation
-        #             raise Exception(f"Not enough good matches found - only {len(good_matches)}.")
+                if len(good_matches) < 4: # A common threshold for robust estimation
+                    raise Exception(f"Not enough good matches found - only {len(good_matches)}.")
                 
-        #         # Extract location of good matches
-        #         src_pts = np.float32([ kp1[m.queryIdx].pt for m in good_matches ]).reshape(-1,1,2)
-        #         dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good_matches ]).reshape(-1,1,2)
+                # Extract location of good matches
+                src_pts = np.float32([ kp1[m.queryIdx].pt for m in good_matches ]).reshape(-1,1,2)
+                dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good_matches ]).reshape(-1,1,2)
                 
-        #         # Find homography
-        #         H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-        #         if H is None:
-        #             raise Exception("findHomography returned None.")
+                # Find homography
+                H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                if H is None:
+                    raise Exception("findHomography returned None.")
                 
-        #         best_H_pred = H
-        #         # Calculate yaw from homography
-        #         A = best_H_pred[0:2, 0:2]
-        #         a, b, c, d = A[0, 0], A[0, 1], A[1, 0], A[1, 1]
-        #         yaw_rad = np.arctan2(c, d) if np.isclose(a, d) and np.isclose(-b, c) else np.arctan2(-b, a)
-        #         best_yaw_pred = np.rad2deg(yaw_rad)
+                best_H_pred = H
+                # Calculate yaw from homography
+                A = best_H_pred[0:2, 0:2]
+                a, b, c, d = A[0, 0], A[0, 1], A[1, 0], A[1, 1]
+                yaw_rad = np.arctan2(c, d) if np.isclose(a, d) and np.isclose(-b, c) else np.arctan2(-b, a)
+                best_yaw_pred = np.rad2deg(yaw_rad)
             
-        #     elif self.hparams.homography_method == 'lightglue':
-        #         pass
-        #         # best_H_pred, best_yaw_pred, _ = lightglue_estimate_rotation_angle(self.extractor, self.matcher, uav_img_np, ref_sat_img_np)
+            elif self.hparams.homography_method == 'lightglue':
+                pass
+                # best_H_pred, best_yaw_pred, _ = lightglue_estimate_rotation_angle(self.extractor, self.matcher, uav_img_np, ref_sat_img_np)
             
-        #     elif self.hparams.homography_method in ['mapglue']:
-        #         best_H_pred, best_yaw_pred, _ = estimate_rotation_angle(self.homography_method, uav_img_np, pred_sat_crop_np)
+            elif self.hparams.homography_method in ['mapglue']:
+                best_H_pred, best_yaw_pred, _ = estimate_rotation_angle(self.homography_method, uav_img_np, pred_sat_crop_np)
         
-        # except Exception as e:
-        #     print(f"Homography estimation failed with method '{self.hparams.homography_method}': {e}")
-        #     best_H_pred = None
+        except Exception as e:
+            print(f"Homography estimation failed with method '{self.hparams.homography_method}': {e}")
+            best_H_pred = None
 
-        # best_H_pred, best_yaw_pred, _ = estimate_rotation_angle(self.homography_method, uav_img_np, pred_sat_crop_np)
+        best_H_pred, best_yaw_pred, _ = estimate_rotation_angle(self.homography_method, uav_img_np, pred_sat_crop_np)
 
-        # if best_H_pred is None:
-        #     return {
-        #         "pred_coordinate": pred_coords_2d.squeeze().detach().cpu().numpy(),
-        #         "true_coordinate": true_coords_2d.squeeze().cpu().numpy(),
-        #         "pred_yaw_angle": pred_yaw_deg.squeeze().detach().cpu().numpy(),
-        #         "true_yaw": true_yaws.squeeze().cpu().numpy()
-        #     }
-
-            print(f"pred_coords_2d: {pred_coords_2d}, ")
+        if best_H_pred is None:
+            return {
+                "pred_coordinate": pred_coords_2d.squeeze().detach().cpu().numpy(),
+                "true_coordinate": true_coords_2d.squeeze().cpu().numpy(),
+                "pred_yaw_angle": best_yaw_pred.squeeze().detach().cpu().numpy(),
+                "true_yaw": true_yaws.squeeze().cpu().numpy()
+            }
             
         return {
             "pred_coordinate": pred_coords_2d.squeeze().detach().cpu().numpy(),
             "true_coordinate": true_coords_2d.squeeze().cpu().numpy(),
-            "pred_yaw_angle": pred_yaw_deg.squeeze().detach().cpu().numpy(),
+            "pred_yaw_angle": best_yaw_pred.squeeze().detach().cpu().numpy(),
             "true_yaw": true_yaws.squeeze().cpu().numpy()
         }
 

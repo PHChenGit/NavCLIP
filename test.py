@@ -20,7 +20,7 @@ from models.geoclip.GeoCLIPLightning import GeoCLIPLightning
 from models.geoclip.misc import log_pred_result, calculate_angle_error, create_gallery, calculate_location_error_metrics
 
 from models.geoclip.satellite_processor import SatelliteImageProcessor
-from pyproj import  CRS
+from pyproj import CRS
 
 def visualize(pred_locations: List[Tuple[int, int]], true_locations:List[Tuple[int, int]], output_folder: Path, sat_img_path: str):
     assert len(pred_locations) == len(true_locations)
@@ -188,12 +188,13 @@ def main(args):
 
     pred_yaw_mae, pred_yaw_rmse, yaw_error_list = calculate_angle_error(pred_yaw_list, true_yaw_list)
     yaw_error_list = np.array(yaw_error_list).squeeze()
+    print(f"pred_yaw_mae: {pred_yaw_mae}, pred_yaw_rmse: {pred_yaw_rmse}")
 
     data = {
         "Pred Dist MAE(meters)": round(dist_error_result['mae_meters'], 2),
         "Pred Dist RMSE(meters)": round(dist_error_result['rmse_meters'], 2),
-        "Pred Yaw MAE(degree)": round(pred_yaw_mae, 2),
-        "Pred Yaw RMSE(degree)": round(pred_yaw_rmse, 2)
+        "Pred Yaw MAE(degree)": round(float(pred_yaw_mae), 2),
+        "Pred Yaw RMSE(degree)": round(float(pred_yaw_rmse), 2),
     }
     print(data)
     log_pred_result(data, Path(args.output_dir), "test_result.json")

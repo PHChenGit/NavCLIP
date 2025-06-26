@@ -24,7 +24,8 @@ if __name__ == '__main__':
     parser.add_argument("--ds_folder", type=str, default=r"~/Documents/hsun/datasets/NTU_playground_Cross_Season_100k", help="dataset folder path")
     parser.add_argument("--dataset_file", type=str, default=r"dataset.csv", help="dataset csv file")
     parser.add_argument("--scheduler_gamma", type=float, default=0.5)
-    parser.add_argument("--sat_img", type=str)
+    parser.add_argument("--sat_img_png", type=str)
+    parser.add_argument("--sat_img_tif", type=str)
     args = parser.parse_args()
 
     ACCELERATOR = 'gpu' if torch.cuda.is_available() else 'cpu'
@@ -58,22 +59,23 @@ if __name__ == '__main__':
 
     checkpoint_callback = MyModelCheckpoint(
         dirpath=f"{args.ckpt_folder}",
-        filename='best-model-{epoch:02d}-{val_dist_MAE:.4f}',
+        filename='best-model-{epoch:02d}-{val_dist_MAE_meters:.4f}',
         save_top_k=1,
         verbose=True,
-        monitor='val_dist_MAE', # 監控驗證損失
+        monitor='val_dist_MAE_meters', # 監控驗證損失
         mode='min'
     )
     early_stop_callback = EarlyStopping(
-        monitor='val_dist_MAE',
-        patience=20, # 連續 n 個 Epoch 沒有改善就停止
+        monitor='val_dist_MAE_meters',
+        patience=10, # 連續 n 個 Epoch 沒有改善就停止
         verbose=True,
         mode='min'
     )
     model = GeoCLIPLightning(
         gallery_path=str(VAL_COORDINATE_GALLERY),
         clip_model_name="google/siglip2-base-patch16-224",
-        sat_img=args.sat_img,
+        sat_img_png=args.sat_img_png,
+        sat_img_tif=args.sat_img_tif,
         learning_rate=args.lr,
         scheduler_gamma=args.scheduler_gamma,
         epochs=args.epochs,
