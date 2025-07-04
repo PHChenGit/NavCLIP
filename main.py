@@ -24,6 +24,7 @@ if __name__ == '__main__':
     parser.add_argument("--ds_folder", type=str, default=r"~/Documents/hsun/datasets/NTU_playground_Cross_Season_100k", help="dataset folder path")
     parser.add_argument("--dataset_file", type=str, default=r"taipei.csv", help="dataset csv file")
     parser.add_argument("--scheduler_gamma", type=float, default=0.5)
+    parser.add_argument("--sat_img", type=str)
     args = parser.parse_args()
 
     ACCELERATOR = 'gpu' if torch.cuda.is_available() else 'cpu'
@@ -35,14 +36,13 @@ if __name__ == '__main__':
     TRAIN_CSV = DATASET_ROOT.joinpath('train', CSV_FILE)
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('train', 'gallery.csv')
-    VAL_COORDINATE_GALLERY = DATASET_ROOT.joinpath('val', 'gallery.csv')
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('all_gallery.csv')
 
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
         train_csv=str(TRAIN_CSV),
         val_csv=str(VAL_CSV),
-        dataset_type=DataLoaderTypesEnum.CrossSeasonPose,
+        dataset_type=DataLoaderTypesEnum.DJIPose,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224,
@@ -54,9 +54,6 @@ if __name__ == '__main__':
     val_dataloader = datamodule.val_dataloader()
     if not COORDINATE_GALLERY.exists():
         create_gallery(COORDINATE_GALLERY.parent, train_dataloader)
-
-    if not VAL_COORDINATE_GALLERY.exists():
-        create_gallery(VAL_COORDINATE_GALLERY.parent, val_dataloader)
 
     checkpoint_callback = MyModelCheckpoint(
         dirpath=f"{args.ckpt_folder}",
@@ -72,7 +69,14 @@ if __name__ == '__main__':
         verbose=True,
         mode='min'
     )
-    model = GeoCLIPLightning(gallery_path=str(COORDINATE_GALLERY), learning_rate=args.lr, scheduler_gamma=args.scheduler_gamma)
+    model = GeoCLIPLightning(
+        gallery_path=str(COORDINATE_GALLERY),
+        clip_model_name="openai/clip-vit-large-patch14",
+        sat_img=Path(args.sat_img),
+        learning_rate=args.lr,
+        scheduler_gamma=args.scheduler_gamma,
+        epochs=args.epochs,
+    )
 
     tensorboard_logger = pl.loggers.TensorBoardLogger(save_dir="logs", name=args.name)
 
@@ -80,6 +84,8 @@ if __name__ == '__main__':
         default_root_dir='output',
         max_epochs=args.epochs,
         accelerator=ACCELERATOR,
+        devices='auto',
+        precision="bf16-mixed",
         callbacks=[checkpoint_callback, early_stop_callback],
         logger=tensorboard_logger,
         log_every_n_steps=50,

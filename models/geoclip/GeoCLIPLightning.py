@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import StepLR, MultiStepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import pytorch_lightning as pl
 from transformers import CLIPModel, AutoProcessor
@@ -19,7 +19,6 @@ from .misc import (
     denormalize_and_restore_image,
     estimate_rotation_angle,
     crop_image,
-    get_neighbors,
 )
 
 class GeoCLIPLightning(pl.LightningModule):
@@ -31,6 +30,8 @@ class GeoCLIPLightning(pl.LightningModule):
                  learning_rate: float = 1e-4,
                  weight_decay: float = 0.01,
                  scheduler_gamma: float = 0.5,
+                 epochs: int = 200,
+                 homography_method: str = 'mapglue'
                  ):
         super().__init__()
         self.save_hyperparameters()
@@ -140,25 +141,22 @@ class GeoCLIPLightning(pl.LightningModule):
         return dist_mae, dist_rmse
 
     def training_step(self, batch, batch_idx):
-        def _train(imgs, gps_all, targets_img_gps):
-            with torch.autocast(device_type='cuda'):
-                logits_img_gps = self(imgs, gps_all)
-            loss = self.criterion(logits_img_gps, targets_img_gps)
-
-            return loss
-
-        ref_imgs, query_imgs, coordinates, yaws = batch
+        ref_imgs, query_imgs, gps_coordinate, pixel_coordinate, yaws = batch
         batch_size = ref_imgs.shape[0]
 
         gps_queue = self.get_gps_queue()
-        gps_all = torch.cat([coordinates, gps_queue], dim=0)
-        self.dequeue_and_enqueue(coordinates)
+        gps_all = torch.cat([pixel_coordinate, gps_queue], dim=0)
+        self.dequeue_and_enqueue(pixel_coordinate)
 
         # 創建標籤 (對角線為 1，代表匹配的 image-location 對)
         labels = torch.arange(batch_size, dtype=torch.long, device=self.device)
 
-        ref_loss = _train(ref_imgs, gps_all, labels)
-        query_loss = _train(query_imgs, gps_all, labels)
+        logits_ref_img_gps = self(ref_imgs, gps_all)
+        ref_loss = self.criterion(logits_ref_img_gps, labels)
+
+        logits_query_img_gps = self(query_imgs, gps_all)
+        query_loss = self.criterion(logits_query_img_gps, labels)
+
         loss = ref_loss + query_loss
 
         # 記錄損失
@@ -167,50 +165,49 @@ class GeoCLIPLightning(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        ref_imgs, query_imgs, coordinates, yaws = batch
+        ref_imgs, query_imgs, gps_coordinate, pixel_coordinate, yaws = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
 
-        with torch.autocast(device_type='cuda'):
-            logits_per_image = self(query_imgs, self.gps_gallery)
-
+        logits_per_image = self(query_imgs, self.gps_gallery)
         probs = logits_per_image.softmax(dim=-1)
         out = torch.argmax(probs, dim=-1)
         pred_coordinates = self.gps_gallery[out]
 
-        val_dist_mae, val_dist_rmse = self._common_val_test_loss(pred_coordinates, coordinates)
+        val_dist_mae, val_dist_rmse = self._common_val_test_loss(pred_coordinates, pixel_coordinate)
 
         self.log('val_dist_MAE', val_dist_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val_dist_RMSE', val_dist_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_dist_RMSE', val_dist_rmse, on_step=False, on_epoch=True, prog_bar=False, logger=True)
 
         return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        query_imgs, coordinates, yaws = batch
+        sat_img, query_imgs, gps_coordinate_3d, pixel_coordinate_3d = batch
+        yaws = pixel_coordinate_3d[:, 2].detach().cpu().numpy()
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
 
         with torch.autocast(device_type='cuda'):
             logits_per_image = self(query_imgs, self.gps_gallery) # [B, num_gallery_gps]
-
-        probs_per_image = logits_per_image.softmax(dim=-1).cpu() # [B, num_gallery_gps]
+            probs_per_image = logits_per_image.softmax(dim=-1).cpu() # [B, num_gallery_gps]
 
         top_k = 1
         top_pred = torch.topk(probs_per_image, top_k, dim=1)
         pred_coordinate = self.gps_gallery[top_pred.indices[0]]
+        best_pred_coordinates = pred_coordinate[0].detach().cpu().numpy()
 
-        img_h, img_w = query_imgs.shape[2], query_imgs.shape[3] # B, C, H, W = [1, 3, 224, 224])
-        best_pred_coordinates = pred_coordinate[0].cpu().numpy()
-        best_pred_img: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (img_h*2, img_w*2)) # [224, 224]
-        restored_query_imgs: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
-        best_H_pred = None
-        best_yaw_pred = 0.
-        best_matches = None
+        restored_query_img_pil: IM.Image = denormalize_and_restore_image(query_imgs)[0] # [224, 224]
+        restored_ref_img_pil: IM.Image = denormalize_and_restore_image(sat_img)[0] # [224, 224]
+        pred_sat_crop_pil: IM.Image = crop_image(self.sat_img, (best_pred_coordinates[0], best_pred_coordinates[1]), (600, 600))
+
+        uav_img_np = np.array(restored_query_img_pil)
+        pred_sat_crop_np = np.array(pred_sat_crop_pil)
+        ref_sat_img_np = np.array(restored_ref_img_pil)
 
         try:
-            best_H_pred, best_yaw_pred, best_matches = estimate_rotation_angle(self.mapglue, np.array(restored_query_imgs), np.array(best_pred_img))
+            best_H_pred, best_yaw_pred, best_matches = estimate_rotation_angle(self.mapglue, uav_img_np, pred_sat_crop_np)
         except Exception as e:
             print(f"pred image not found matches, {e}")
             best_matches = np.array([])
@@ -218,23 +215,26 @@ class GeoCLIPLightning(pl.LightningModule):
 
         if best_H_pred is None:
             return {
-                "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-                "true_coordinate": coordinates.cpu().numpy(),
+                "pred_pixel_coordinate": best_pred_coordinates,
+                "true_pixel_coordinate": pixel_coordinate_3d[:, :2].detach().cpu().numpy(),
+                "true_gps_coordinate": gps_coordinate_3d[:, :2].detach().cpu().numpy(),
                 "pred_yaw_angle": np.nan,
-                "true_yaw": yaws.cpu().numpy()
+                "true_yaw": yaws
             }
 
         return {
-            "pred_coarse_coordinate": pred_coordinate.detach().cpu().numpy(),
-            "true_coordinate": coordinates.cpu().numpy(),
+            "pred_pixel_coordinate": best_pred_coordinates,
+            "true_pixel_coordinate": pixel_coordinate_3d[:, :2].detach().cpu().numpy(),
+            "true_gps_coordinate": gps_coordinate_3d[:, :2].detach().cpu().numpy(),
             "pred_yaw_angle": best_yaw_pred,
-            "true_yaw": yaws.cpu().numpy()
+            "true_yaw": yaws
         }
 
     def configure_optimizers(self):
         params_to_optimize = [
-            {'params': self.image_encoder.parameters(), "lr": 3e-4},
-            {'params': self.location_encoder.parameters(), "lr": 3e-4},
+            {'params': self.image_encoder.parameters(), "lr": self.hparams.learning_rate},
+            {'params': self.location_encoder.parameters(), "lr": self.hparams.learning_rate},
+            {'params': [self.logit_scale], "lr": self.hparams.learning_rate},
         ]
 
         optimizer = AdamW(params_to_optimize,
@@ -243,9 +243,8 @@ class GeoCLIPLightning(pl.LightningModule):
                           betas=(0.9, 0.999),
                           eps=1e-08)
 
-        # scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
-        # scheduler = MultiStepLR(optimizer, [30, 60, 80], gamma=self.hparams.scheduler_gamma)
-        scheduler = MultiStepLR(optimizer, [50, 80, 110, 130], gamma=self.hparams.scheduler_gamma)
+        # scheduler = StepLR(optimizer, step_size=5000, gamma=0.5)
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.epochs, eta_min=1e-6)
 
         return {
             'optimizer': optimizer,
