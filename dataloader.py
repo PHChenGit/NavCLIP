@@ -16,9 +16,10 @@ import torchvision.transforms.functional as F
 
 import pytorch_lightning as pl
 
-def img_train_transform(size=224):
+def drone_img_train_transform(size=224):
     return transforms.Compose([
-        # transforms.Resize(size),
+        transforms.Resize((size, size)),
+        transforms.CenterCrop((size, size)),
         transforms.RandomApply([transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8),
         transforms.RandomGrayscale(p=0.2),
         transforms.PILToTensor(),
@@ -27,19 +28,54 @@ def img_train_transform(size=224):
         # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)) # ImageNet defaults
     ])
 
-def img_val_transform(size=224):
+def satellite_img_train_transform(size=224):
     return transforms.Compose([
-        # transforms.Resize(size),
+        transforms.Resize((600, 600)),
+        transforms.CenterCrop((size, size)),
+        transforms.RandomApply([transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8),
+        transforms.RandomGrayscale(p=0.2),
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
         # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)) # ImageNet defaults
     ])
 
-def img_test_transform(size=224):
+def drone_img_val_transform(size=224):
+    return transforms.Compose([
+        transforms.Resize((size, size)),
+        transforms.CenterCrop((size, size)),
+        transforms.PILToTensor(),
+        transforms.ConvertImageDtype(torch.float),
+        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
+        # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)) # ImageNet defaults
+    ])
+
+def satellite_img_val_transform(size=224):
+    return transforms.Compose([
+        transforms.Resize((600, 600)),
+        transforms.CenterCrop((size, size)),
+        transforms.PILToTensor(),
+        transforms.ConvertImageDtype(torch.float),
+        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
+        # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)) # ImageNet defaults
+    ])
+
+def drone_img_test_transform(size=224):
      # Usually test/predict also need normalization if the model expects it
     return transforms.Compose([
-        # transforms.Resize(size), # Ensure consistent input size
+        transforms.Resize((size, size)),
+        transforms.CenterCrop((size, size)),
+        transforms.PILToTensor(),
+        transforms.ConvertImageDtype(torch.float),
+        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
+        # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)) # ImageNet defaults
+    ])
+
+def satellite_img_test_transform(size=224):
+     # Usually test/predict also need normalization if the model expects it
+    return transforms.Compose([
+        transforms.Resize((600, 600)),
+        transforms.CenterCrop((size, size)),
         transforms.PILToTensor(),
         transforms.ConvertImageDtype(torch.float),
         transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]) # CLIP Defaults
@@ -481,37 +517,157 @@ class PoseDataLoader_Warping_SIFT(PoseDataLoader_Warping):
         # Return transformed RGB ref/query, UNTRANSFORMED grayscale numpy ref/query, coords, angles
         return ref_img_transformed, query_img_transformed, ref_img_rot_np, query_img_rot_np, coordinate, roll, yaw, pitch
 
-class TestPoseDataLoader(BaseDataLoader):
+class DJIPoseDataLoader(Dataset):
+    """
+    Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
+    """
+    def __init__(self, dataset_file, dataset_folder, sat_transform, drone_transform, size=224):
+        self.dataset_folder = dataset_folder
+        self.sat_transform = sat_transform
+        self.drone_transform = drone_transform
+        self.img_size = size
+
+        self.rotate_angles = list(range(-180, 180, 15))
+        self.rotation_transform = RandomDiscreteRotation(self.rotate_angles)
+
+        self.ref_imgs, self.query_imgs, self.coordinates, self.pixel_coordinates = self._load_dataset(dataset_file)
+
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        ref_imgs = []
+        query_imgs = []
+        gps_coordinates = []
+        pixel_coordinates = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+
+            if not exists(ref_img_path):
+                raise FileNotFoundError(ref_img_path)
+            
+            if not exists(query_img_path):
+                raise FileNotFoundError(query_img_path)
+
+            ref_imgs.append(ref_img_path)
+            query_imgs.append(query_img_path)
+            latitude = float(row['LAT'])
+            longitude = float(row['LON'])
+            gps_coordinates.append((latitude, longitude))
+
+            x = float(row['PIXEL_X'])
+            y = float(row['PIXEL_Y'])
+            pixel_coordinates.append((x, y))
+
+        
+        return np.array(ref_imgs), np.array(query_imgs), np.array(gps_coordinates), np.array(pixel_coordinates)
+    
+    def __len__(self):
+        return len(self.ref_imgs)
+    
+    def __getitem__(self, idx):
+        ref_img_path = self.ref_imgs[idx]
+        query_img_path = self.query_imgs[idx]
+        gps_coordinate = self.coordinates[idx]
+        pixel_coordinate = self.pixel_coordinates[idx]
+
+        ref_img = IM.open(ref_img_path).convert('RGB')
+        query_img = IM.open(query_img_path).convert('RGB')
+
+        yaw, query_img = self.rotation_transform(query_img.copy())
+
+        if self.sat_transform and self.drone_transform:
+            ref_img = self.sat_transform(ref_img)
+            query_img = self.drone_transform(query_img)
+        else:
+            ref_img = F.to_tensor(ref_img)
+            query_img = F.to_tensor(query_img)
+
+        gps_coordinate = torch.tensor(gps_coordinate, dtype=torch.float32)
+        pixel_coordinate = torch.tensor(pixel_coordinate, dtype=torch.float32)
+        yaw = torch.tensor(yaw, dtype=torch.float32)
+
+        return ref_img, query_img, gps_coordinate, pixel_coordinate, yaw
+
+class TestPoseDataLoader(Dataset):
     """
     Loads ref/query image pair, applies random rotation to query, returns images, coords, angle.
     """
     def __init__(self, dataset_file, dataset_folder, transform=None, size=224):
-        super().__init__(dataset_file, dataset_folder, transform, size, is_testing=True)
+        self.dataset_folder = dataset_folder
+        self.transform = transform
+        self.img_size = size
+
+        self.ref_imgs, self.query_imgs, self.gps_coordinates, self.pixel_coordinates = self._load_dataset(dataset_file)
+
+    def _load_dataset(self, dataset_file, required_cols: dict={'REF_IMG', 'QUERY_IMG', 'LAT', 'LON', 'YAW'}):
+        try:
+            dataset_info = pd.read_csv(dataset_file)
+        except Exception as e:
+            raise IOError(f">\tError reading {dataset_file}: {e}")
+
+        if not required_cols.issubset(dataset_info.columns):
+            raise ValueError(f"CSV file {dataset_file} must contain columns: {required_cols}")
+
+        ref_imgs = []
+        query_imgs = []
+        gps_coordinates = []
+        pixel_coordinates = []
+
+        print(f">\tLoading dataset info from: {dataset_file}")
+        for _, row in tqdm(dataset_info.iterrows(), total=len(dataset_info), desc="Checking image paths"):
+            ref_img_path = os.path.join(self.dataset_folder, str(row['REF_IMG']))
+            query_img_path = os.path.join(self.dataset_folder, str(row['QUERY_IMG']))
+
+            if not exists(ref_img_path):
+                raise FileNotFoundError(ref_img_path)
+            
+            if not exists(query_img_path):
+                raise FileNotFoundError(query_img_path)
+
+            ref_imgs.append(ref_img_path)
+            query_imgs.append(query_img_path)
+
+            yaw = float(row['YAW'])
+
+            latitude = float(row['LAT'])
+            longitude = float(row['LON'])
+            gps_coordinates.append((latitude, longitude, yaw))
+
+            x = float(row['PIXEL_X'])
+            y = float(row['PIXEL_Y'])
+            pixel_coordinates.append((x, y, yaw))
+
+        return ref_imgs, query_imgs, gps_coordinates, pixel_coordinates, 
 
     def __getitem__(self, idx):
-        query_img_path = self.ref_imgs[idx]
-        coordinate = self.coordinates[idx]
+        sat_img_path = self.ref_imgs[idx]
+        query_img_path = self.query_imgs[idx]
+        gps_coordinates = self.gps_coordinates[idx]
+        pixel_coordinates = self.pixel_coordinates[idx]
 
+        sat_img = IM.open(sat_img_path).convert('RGB')
         query_img = IM.open(query_img_path).convert('RGB')
-        rotate_angle, query_img = self.rotation_transform(query_img.copy())
-
-        cx, cy = query_img.size
-        left = (cx - self.img_size) // 2
-        top = (cy - self.img_size) // 2
-        right = left + self.img_size
-        bottom = top + self.img_size
-
-        query_img = query_img.crop((left, top, right, bottom))
 
         if self.transform:
+            sat_img = self.transform(sat_img)
             query_img = self.transform(query_img)
         else:
+            sat_img = F.to_tensor(sat_img)
             query_img = F.to_tensor(query_img)
 
-        coordinate = torch.tensor(coordinate, dtype=torch.float)
-        yaw = torch.tensor(rotate_angle)
+        gps_coordinate_3d = torch.tensor(gps_coordinates, dtype=torch.float)
+        pixel_coordinate_3d = torch.tensor(pixel_coordinates, dtype=torch.float)
 
-        return query_img, coordinate, yaw
+        return sat_img, query_img, gps_coordinate_3d, pixel_coordinate_3d
 
 class DataLoaderTypesEnum(Enum):
     Pose = 'Pose'
@@ -520,6 +676,7 @@ class DataLoaderTypesEnum(Enum):
     WarpingLightGlue = 'WarpingLightGlue'
     WarpingSIFT = 'WarpingSIFT'
     TestPose = 'TestPose'
+    DJIPose = 'DJIPose'
 
 class GeoCLIPDataModule(pl.LightningDataModule):
     def __init__(self,
@@ -562,9 +719,12 @@ class GeoCLIPDataModule(pl.LightningDataModule):
         self.test_dataset = None
         self.predict_dataset = None
 
-        self.train_transform = img_train_transform(size=self.hparams.image_size)
-        self.val_transform = img_val_transform(size=self.hparams.image_size)
-        self.test_transform = img_test_transform(size=self.hparams.image_size)
+        self.satellite_train_transform = satellite_img_train_transform(size=self.hparams.image_size)
+        self.drone_train_transform = drone_img_train_transform(size=self.hparams.image_size)
+        self.satellite_val_transform = satellite_img_val_transform(size=self.hparams.image_size)
+        self.drone_val_transform = drone_img_val_transform(size=self.hparams.image_size)
+        self.satellite_test_transform = satellite_img_test_transform(size=self.hparams.image_size)
+        self.drone_test_transform = drone_img_test_transform(size=self.hparams.image_size)
 
     def setup(self, stage: str = None):
         """Create the datasets based on the stage."""
@@ -581,24 +741,43 @@ class GeoCLIPDataModule(pl.LightningDataModule):
             TrainValPredDatasetClass = lambda csv, folder, transform: PoseDataLoader_Warping_SIFT(csv, folder, transform, size=self.hparams.image_size)
         elif self.hparams.dataset_type is DataLoaderTypesEnum.TestPose:
             PredDatasetClass = TestPoseDataLoader
+        elif self.hparams.dataset_type is DataLoaderTypesEnum.DJIPose:
+            TrainValPredDatasetClass = DJIPoseDataLoader
         else:
             raise ValueError(f"Unknown dataset_type: {self.hparams.dataset_type}")
 
         if stage == 'fit':
             print(f"Setting up 'fit' stage with dataset type: {self.hparams.dataset_type}")
-            self.train_dataset = TrainValPredDatasetClass(
-                dataset_file=self.hparams.train_csv,
-                dataset_folder=self.hparams.dataset_folder,
-                transform=self.train_transform,
-                size=self.hparams.image_size
-            )
-            # Use the same dataset class type for validation, but with validation transform
-            self.val_dataset = TrainValPredDatasetClass(
-                dataset_file=self.hparams.val_csv,
-                dataset_folder=self.hparams.dataset_folder,
-                transform=self.val_transform,
-                size=self.hparams.image_size
-            )
+            if self.hparams.dataset_type is DataLoaderTypesEnum.DJIPose:
+                self.train_dataset = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.train_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    sat_transform=self.satellite_train_transform,
+                    drone_transform=self.drone_train_transform,
+                    size=self.hparams.image_size
+                )
+                # Use the same dataset class type for validation, but with validation transform
+                self.val_dataset = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.val_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    sat_transform=self.satellite_val_transform,
+                    drone_transform=self.drone_val_transform,
+                    size=self.hparams.image_size
+                )
+            else:
+                self.train_dataset = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.train_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    transform=self.train_transform,
+                    size=self.hparams.image_size
+                )
+                # Use the same dataset class type for validation, but with validation transform
+                self.val_dataset = TrainValPredDatasetClass(
+                    dataset_file=self.hparams.val_csv,
+                    dataset_folder=self.hparams.dataset_folder,
+                    transform=self.val_transform,
+                    size=self.hparams.image_size
+                )
             print(f"Train dataset size: {len(self.train_dataset)}")
             print(f"Validation dataset size: {len(self.val_dataset)}")
 
