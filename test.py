@@ -121,7 +121,7 @@ def main(args):
 
     DATASET_ROOT = Path(DATASET_ROOT_PATH)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test/random/gallery_extend.csv')
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('test/gallery.csv')
     print(f">\tCoordinate gallery path: {COORDINATE_GALLERY}")
 
     OUTPUT_DIR = Path(args.output_dir)
@@ -131,7 +131,7 @@ def main(args):
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
         predict_csv=str(PRED_CSV),
-        dataset_type=DataLoaderTypesEnum.TestPose,
+        dataset_type=DataLoaderTypesEnum.TestGE,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224
@@ -145,7 +145,7 @@ def main(args):
     model = GeoCLIPLightning(
         gallery_path=str(COORDINATE_GALLERY),
         sat_img=args.sat_img_png,
-        clip_model_name="google/siglip2-base-patch16-224",
+        clip_model_name="openai/clip-vit-large-patch14",
         homography_method="mapglue"
         )
     model.load_weights(args.pretrained_model_dir)
@@ -170,7 +170,6 @@ def main(args):
             continue
 
         pred_gps_coord = sat_processor.pixel_to_gps(data["pred_pixel_coordinate"][0], data["pred_pixel_coordinate"][1])
-        # print(f"pixel coordinate: {data["pred_coarse_coordinate"]}, EPGS 3857: {pred_gps_coord}")
         pred_gps_coord = sat_processor.convert_crs(sat_processor.crs, CRS("EPSG:4326"), pred_gps_coord[0], pred_gps_coord[1])
 
         pred_pixel_coordinate_list.append(data["pred_pixel_coordinate"])
@@ -206,15 +205,15 @@ def main(args):
     pred_yaw_rmse = round(pred_yaw_rmse, 2)
 
     data = {
-        "Pred Dist MAE(pixels)": pred_dist_mae_pixel,
-        "Pred Dist RMSE(pixels)": pred_dist_rmse_pixel,
-        "Pred Dist MAE(meters)": dist_error_result['mae_meters'],
-        "Pred Dist RMSE(meters)": dist_error_result['rmse_meters'],
-        "Pred Yaw MAE(degree)": pred_yaw_mae,
-        "Pred Yaw RMSE(degree)": pred_yaw_rmse
+        "Pred Dist MAE(pixels)": round(float(pred_dist_mae_pixel), 2),
+        "Pred Dist RMSE(pixels)": round(float(pred_dist_rmse_pixel), 2),
+        "Pred Dist MAE(meters)": round(float(dist_error_result['mae_meters']), 2),
+        "Pred Dist RMSE(meters)": round(float(dist_error_result['rmse_meters']), 2),
+        "Pred Yaw MAE(degree)": round(float(pred_yaw_mae), 2),
+        "Pred Yaw RMSE(degree)": round(float(pred_yaw_rmse), 2)
     }
     print(data)
-    log_pred_result(data, Path(args.output_dir), "test_result_extend.json")
+    log_pred_result(data, Path(args.output_dir), "test_result.json")
 
     visualize_error_histogram(np.array(dist_error_result['error_list']), Path(args.output_dir))
     visualize_error_histogram(

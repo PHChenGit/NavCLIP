@@ -36,13 +36,13 @@ if __name__ == '__main__':
     TRAIN_CSV = DATASET_ROOT.joinpath('train', CSV_FILE)
     VAL_CSV = DATASET_ROOT.joinpath('val', CSV_FILE)
     PRED_CSV = DATASET_ROOT.joinpath('test', CSV_FILE)
-    COORDINATE_GALLERY = DATASET_ROOT.joinpath('all_gallery.csv')
+    COORDINATE_GALLERY = DATASET_ROOT.joinpath('val/gallery.csv')
 
     datamodule = GeoCLIPDataModule(
         dataset_folder=str(DATASET_ROOT),
         train_csv=str(TRAIN_CSV),
         val_csv=str(VAL_CSV),
-        dataset_type=DataLoaderTypesEnum.DJIPose,
+        dataset_type=DataLoaderTypesEnum.Pose,
         batch_size=args.bs,
         num_workers=args.num_workers,
         image_size=224,
@@ -50,10 +50,9 @@ if __name__ == '__main__':
     )
 
     datamodule.setup('fit')
-    train_dataloader = datamodule.train_dataloader()
     val_dataloader = datamodule.val_dataloader()
     if not COORDINATE_GALLERY.exists():
-        create_gallery(COORDINATE_GALLERY.parent, train_dataloader)
+        create_gallery(COORDINATE_GALLERY.parent, val_dataloader)
 
     checkpoint_callback = MyModelCheckpoint(
         dirpath=f"{args.ckpt_folder}",

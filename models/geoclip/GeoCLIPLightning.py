@@ -154,7 +154,7 @@ class GeoCLIPLightning(pl.LightningModule):
         return dist_mae, dist_rmse
 
     def training_step(self, batch, batch_idx):
-        ref_imgs, query_imgs, gps_coordinate, pixel_coordinate, yaws = batch
+        ref_imgs, query_imgs, pixel_coordinate, yaws = batch
         batch_size = ref_imgs.shape[0]
 
         gps_queue = self.get_gps_queue()
@@ -178,7 +178,7 @@ class GeoCLIPLightning(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        ref_imgs, query_imgs, gps_coordinate, pixel_coordinate, yaws = batch
+        ref_imgs, query_imgs, pixel_coordinate, yaws = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
@@ -196,8 +196,7 @@ class GeoCLIPLightning(pl.LightningModule):
         return val_dist_mae
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        sat_img, query_imgs, gps_coordinate_3d, pixel_coordinate_3d, drone_filename = batch
-        yaws = pixel_coordinate_3d[:, 2].detach().cpu().numpy()
+        sat_img, query_imgs, gps_coordinates, pixel_coordinates, yaws, drone_filename = batch
 
         if self.gps_gallery.device != self.device:
             self.gps_gallery = self.gps_gallery.to(self.device)
@@ -224,7 +223,7 @@ class GeoCLIPLightning(pl.LightningModule):
 
         if self.hparams.homography_method == 'mapglue':
             try:
-                best_H_pred, best_yaw_pred, best_matches, pt0, pt1 = estimate_rotation_angle(self.mapglue, uav_img_np, pred_sat_crop_np)
+                best_H_pred, best_yaw_pred, best_matches, pt0, pt1 = estimate_rotation_angle(self.feat_matching_model, uav_img_np, ref_sat_img_np)
 
                 if best_yaw_pred >= 20:
                     pt0_np = pt0.cpu().numpy()
@@ -244,7 +243,7 @@ class GeoCLIPLightning(pl.LightningModule):
                             None, 
                             flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
                         )
-                    cv2.imwrite(f"/home/rvl1421/Documents/hsun/datasets/DJI_NTU_5/matching_kpt_1/{drone_filename}_{best_pred_coordinates[0]}_{best_pred_coordinates[1]}_{pixel_coordinate_3d[0, 0]}_{pixel_coordinate_3d[0, 1]}.png", matched_kpt_img)
+                    cv2.imwrite(f"/home/rvl1421/Documents/hsun/NavCLIP/output/affine_NTU_playground/test/matching_kpt/{drone_filename}_{best_pred_coordinates[0]}_{best_pred_coordinates[1]}_{pixel_coordinates[0, 0]}_{pixel_coordinates[0, 1]}.png", matched_kpt_img)
             except Exception as e:
                 print(f"pred image not found matches, {e}")
                 best_matches = np.array([])
@@ -299,31 +298,19 @@ class GeoCLIPLightning(pl.LightningModule):
             yaw_rad = np.arctan2(c, d) if np.isclose(a, d) and np.isclose(-b, c) else np.arctan2(-b, a)
             best_yaw_pred = np.rad2deg(yaw_rad)
 
-            if best_yaw_pred >= 20:
-                matched_kpt_img = cv2.drawMatches(
-                                uav_img_np, 
-                                kp1, 
-                                pred_sat_crop_np, 
-                                kp2, 
-                                good_matches, # Pass the list of DMatch objects for inliers
-                                None, 
-                                flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-                            )
-                cv2.imwrite(f"/home/rvl1421/Documents/hsun/NavCLIP/output/openai_clip_image_encoder_sa_and_gelu_with_DJI_NTU_5/test/route_5_sift/{drone_filename}_{best_pred_coordinates[0]}_{best_pred_coordinates[1]}_{pixel_coordinate_3d[0, 0]}_{pixel_coordinate_3d[0, 1]}.png", matched_kpt_img)
-
         if best_H_pred is None:
             return {
                 "pred_pixel_coordinate": best_pred_coordinates,
-                "true_pixel_coordinate": pixel_coordinate_3d[0, :2].detach().cpu().numpy(),
-                "true_gps_coordinate": gps_coordinate_3d[0, :2].detach().cpu().numpy(),
+                "true_pixel_coordinate": pixel_coordinates[0].detach().cpu().numpy(),
+                "true_gps_coordinate": gps_coordinates[0].detach().cpu().numpy(),
                 "pred_yaw_angle": np.nan,
                 "true_yaw": yaws
             }
 
         return {
             "pred_pixel_coordinate": best_pred_coordinates,
-            "true_pixel_coordinate": pixel_coordinate_3d[0, :2].detach().cpu().numpy(),
-            "true_gps_coordinate": gps_coordinate_3d[0, :2].detach().cpu().numpy(),
+            "true_pixel_coordinate": pixel_coordinates[0].detach().cpu().numpy(),
+            "true_gps_coordinate": gps_coordinates[0].detach().cpu().numpy(),
             "pred_yaw_angle": best_yaw_pred,
             "true_yaw": yaws
         }
