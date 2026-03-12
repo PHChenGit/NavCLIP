@@ -1,54 +1,80 @@
-# Install
+# NavCLIP
 
-## Prepare environment
+Training and evaluation code for NavCLIP.
 
-### UV
-If you don't install uv on your PC, please install uv first.
-UV is a new environment and package management system, it just like anaconda, but it's more faster. For more uv detail you can read it on uv official website. [UV introduction](https://docs.astral.sh/uv/)
+## Requirements
 
-Because I'm using Ubuntu 24.04 for my PC, I install the uv in this way.
-```
+- Python `>=3.12.9`
+- `uv` for dependency and environment management
+
+Install `uv` (Linux/macOS):
+
+```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
+uv --version
 ```
 
-And then check it.
-```
-uv
+Install dependencies:
+
+```bash
+uv sync
 ```
 
-### Python, Environment, and Packages
+## Dataset Layout
 
-Install python.
-```
-uv python install 3.12
-```
+Set `--ds_folder` to your dataset root. The code expects:
 
-Prepare virtual environment.
-```
-uv venv
-source .venv/bin/activate
-```
-
-Install dependency packages.
-```
-uv pip install .
+```text
+{ds_folder}/
+  train/
+    {dataset_file}.csv
+    gallery.csv
+  val/
+    {dataset_file}.csv
+    gallery.csv
+  test/
+    {dataset_file}.csv
 ```
 
-# Usage
+`{dataset_file}.csv` must include these columns:
 
-## Train
+- `REF_IMG`
+- `QUERY_IMG`
+- `LAT`
+- `LON`
 
-```
-uv main.py --bs 512 --epochs 150 \
+## Training
+
+```bash
+uv run main.py \
+  --name NavCLIP \
+  --bs 512 \
+  --epochs 150 \
+  --lr 1e-4 \
   --ds_folder {your_dataset_root} \
-  --dataset_file {your_image_and_location.csv} \
-  --output {where_you_want_to_save_checkpoints}
+  --dataset_file {your_dataset_file.csv} \
+  --ckpt_folder {checkpoint_output_dir}
 ```
 
-## Test
-```
-uv test.py --bs 1 \
+## Evaluation / Inference
+
+```bash
+uv run test.py \
+  --bs 1 \
   --ds_folder {your_dataset_root} \
-  --dataset_file {your_image_and_location.csv} \
-  --pretrained_model_dir {where_to_load_your_pretrained_checkpoints} \
-  --output_dir {where_you_want_to_save_your_prediction_result}
+  --dataset_file {your_dataset_file.csv} \
+  --pretrained_model_dir {checkpoint_path_or_dir} \
+  --sat_img {satellite_image_path} \
+  --output_dir {prediction_output_dir}
+```
+
+Outputs include:
+
+- `test_result_2.json` (metrics)
+- `location_matching.jpg` (visualization)
+
+## Dataset
+
+You can download the UAV Taipei dataset from:
+
+http://vision.ee.ccu.edu.tw/dataset/UAV_Taipei.zip
