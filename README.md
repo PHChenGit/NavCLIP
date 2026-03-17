@@ -75,6 +75,42 @@ Outputs include:
 
 ## Dataset
 
-You can download the UAV Taipei dataset from:
+Use the provided download script to fetch one or more datasets.
+The script shows an interactive menu so you can choose which datasets to download
+— useful since the full collection totals ~202 GB.
 
-http://vision.ee.ccu.edu.tw/dataset/UAV_Taipei.zip
+Run from the project root:
+
+```bash
+chmod +x ./scripts/download_dataset.sh
+./scripts/download_dataset.sh
+```
+
+```txt
+Available datasets:
+
+   1) Daan Park 100K                                       (10.9 GB)
+   2) Daan Park                                            (3.9 GB)
+   3) NTU Playground 1M                                    (34.1 GB)
+  ...
+  11) UCLA Cross Season 100K                               (64.6 GB)
+
+Enter numbers to download (e.g. 1 3 5), or 'a' for all:
+```
+
+The script will then show the total size, available disk space, and ask for confirmation before downloading.
+
+**Options:**
+
+| Flag           | Description                                        |
+| -------------- | -------------------------------------------------- |
+| `[OUTPUT_DIR]` | Save to a custom directory (default: `./datasets`) |
+| `-y` / `--yes` | Skip menu and confirmation — download everything   |
+
+```bash
+./scripts/download_dataset.sh ~/my/path   # custom output directory
+./scripts/download_dataset.sh -y          # download all, no prompts
+OUTPUT_DIR=~/my/path ./scripts/download_dataset.sh -y
+```
+
+Datasets are hosted at [here](https://vision.ee.ccu.edu.tw/dataset/UAV_Taipei.php).
